@@ -108,9 +108,14 @@ def main() -> None:
 
     if args.list_gpus:
         from .collector import enumerate_adapters, ordered_adapters
+        from .tcc import TccAdapter
 
         for i, adapter in enumerate(ordered_adapters(enumerate_adapters())):
-            print(f"{i}: {adapter.name} ({adapter.vendor}, LUID 0x{adapter.luid & 0xffffffffffffffff:016x})")
+            if isinstance(adapter, TccAdapter):  # its LUID is made up from the PCI address, so show the address
+                bus, device, function = adapter.pci_address
+                print(f"{i}: {adapter.name} ({adapter.vendor}, TCC compute-only, PCI {bus:02x}:{device:02x}.{function:x})")
+            else:
+                print(f"{i}: {adapter.name} ({adapter.vendor}, LUID 0x{adapter.luid & 0xffffffffffffffff:016x})")
         return
 
     _check_gpu(ap, args.gpu)
