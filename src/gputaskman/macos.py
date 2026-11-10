@@ -288,16 +288,24 @@ class MacCounters:
         procs: dict[int, dict[int, ProcGpu]] = defaultdict(dict)
         adapters: dict[int, AdapterGpu] = defaultdict(AdapterGpu)
         dev = parse_accelerator(accel)
+        from .macos_intel_amd_adapter import intel_amd_adapter
+        amd_adapter = intel_amd_adapter() if os.uname().machine == 'x86_64' else None
+        from .macos_intel_amd_vram import vram_used_from_entries
+        amd_total = amd_adapter.dedicated_vram if amd_adapter is not None else 0
+        amd_used = vram_used_from_entries(accel, amd_total) if amd_total else None
         if dev is None:
             self.device = None  # no reading this time: never keep showing the last one as current
         else:
-            if dev.allocated is not None:
+            if amd_used is not None:
+                adapters[ADAPTER_KEY].dedicated = float(amd_used)
+            elif amd_adapter is None and dev.allocated is not None:
                 adapters[ADAPTER_KEY].dedicated = float(dev.allocated)
             from .macos_intel_amd_adapter import intel_amd_adapter
             amd = intel_amd_adapter()
             self.device = NvDevice(index=0, name=amd.name if amd else dev.model, driver_model="Metal",
                                    mem_total=amd.dedicated_vram if amd else physical_memory(),
-                                   mem_used=dev.allocated, util_gpu=dev.utilization, source="IOKit")
+                                   mem_used=amd_used if amd_adapter is not None else dev.allocated,
+                                   util_gpu=dev.utilization, source="IOKit")
         if clients is None:
             # A failed client query is not an empty client list: preserve the last valid rate baseline and
             # footprint targets so the next successful sample spans the full elapsed interval.
