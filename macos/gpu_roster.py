@@ -15,7 +15,7 @@ class ProcessRoster:
             seen.add(pid)
             self.entries[pid] = (ident, now, dict(row, measurement_state='current'))
         for pid, (original, last, row) in list(self.entries.items()):
-            if identity(pid) != original or now-last > self.ttl: del self.entries[pid]
+            if identity(pid) != original: del self.entries[pid]  # expired GPU samples never imply process exit
         output = []
         for pid, (_, last, row) in self.entries.items():
             r = dict(row)
