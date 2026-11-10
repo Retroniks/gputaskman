@@ -21,10 +21,18 @@ def package(snapshot: dict, cpu: dict[int, float], elapsed_ms: int) -> dict:
 def run() -> None:
     import psutil
     from gputaskman.collector import Collector
+    from gpu_roster import ProcessRoster
     from gputaskman.report import to_dict
     sampler = psutil.cpu_percent  # system-wide priming is separate from per-process data
     sampler(interval=None)
     cpu_pids: dict[int, psutil.Process] = {}
+    roster = ProcessRoster(ttl=60)
+    def process_identity(pid):
+        try:
+            p = psutil.Process(pid)
+            return p.create_time() if p.is_running() and p.status() != psutil.STATUS_ZOMBIE else None
+        except (psutil.Error, OSError):
+            return None
     with_collector = Collector(scan_budget=0.0)
     try:
         while True:
@@ -45,6 +53,11 @@ def run() -> None:
                     cpu_pids.pop(pid, None)
             cpu_pids = {p: obj for p, obj in cpu_pids.items() if any(x.pid == p for x in snap.procs)}
             data = package(to_dict(snap), known, round((time.monotonic()-started)*1000))
+            raw = data["processes"]
+            data["observed_process_count"] = len(raw)
+            data["processes"] = roster.update(raw, process_identity)
+            data["awaiting_process_count"] = sum(r["measurement_state"] == "awaiting" for r in data["processes"])
+            data["roster_process_count"] = len(data["processes"])
             print(json.dumps(data, separators=(",", ":"), allow_nan=False), flush=True)
             time.sleep(max(0.5, 2.0-(time.monotonic()-started)))
     finally:

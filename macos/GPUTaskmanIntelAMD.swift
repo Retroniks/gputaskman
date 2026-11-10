@@ -9,6 +9,7 @@ struct GPUProcess: Identifiable {
     let gpu: Double?
     let vram: Double?
     let kind: String
+    let awaiting: Bool
 }
 @MainActor final class GPUViewModel: ObservableObject {
     @Published var device = "AMD Radeon RX 580"
@@ -19,6 +20,8 @@ struct GPUProcess: Identifiable {
     @Published var status = "GPU-Messung wird gestartet …"
     @Published var updated: Date?
     @Published var count = 0
+    @Published var observedCount = 0
+    @Published var awaitingCount = 0
     private var worker: Process?
     private var reader: DispatchWorkItem?
     private var watchdog: Timer?
@@ -96,17 +99,23 @@ struct GPUProcess: Identifiable {
         let dev = root["device"] as? [String: Any] ?? [:]
         gpuLoad = (dev["util_gpu"] as? NSNumber)?.doubleValue
         let rawRows = root["processes"] as? [[String: Any]] ?? []
+        observedCount = root["observed_process_count"] as? Int ?? rawRows.count
+        awaitingCount = root["awaiting_process_count"] as? Int ?? 0
         items = rawRows.compactMap { row -> GPUProcess? in
             guard let pid = row["pid"] as? Int else { return nil }
             return GPUProcess(id: pid, name: row["name"] as? String ?? "PID \(pid)",
                               cpu: (row["cpu_pct"] as? NSNumber)?.doubleValue,
                               gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
                               vram: (row["vram_bytes"] as? NSNumber)?.doubleValue,
-                              kind: row["kind"] as? String ?? "")
-        }.sorted { ($0.gpu ?? -1, $0.vram ?? -1) > ($1.gpu ?? -1, $1.vram ?? -1) }
+                              kind: row["kind"] as? String ?? "",
+                              awaiting: row["measurement_state"] as? String == "awaiting")
+        }.sorted {
+            if $0.awaiting != $1.awaiting { return !$0.awaiting }
+            return ($0.gpu ?? -1, $0.vram ?? -1, $0.name) > ($1.gpu ?? -1, $1.vram ?? -1, $1.name)
+        }
         count += 1
         updated = Date()
-        status = "\(items.count) Prozesse · Probe \(count) · laufende Messung"
+        status = "\(observedCount) aktuell · \(awaitingCount) Messung ausstehend · Probe \(count)"
     }
     deinit { worker?.terminate() }
 }
@@ -145,8 +154,8 @@ struct GPUContentView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing) {
-                    Text("GPU-Prozesse").foregroundStyle(.secondary)
-                    Text("\(model.items.count)").font(.title2.monospacedDigit())
+                    Text("GPU-Prozesse (aktuell / ausstehend)").foregroundStyle(.secondary)
+                    Text("\(model.observedCount) / \(model.awaitingCount)").font(.title2.monospacedDigit())
                 }
             }.padding(12).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
             Table(model.items) {
@@ -161,6 +170,10 @@ struct GPUContentView: View {
                 TableColumn("CPU") { p in Text(pct(p.cpu)).monospacedDigit() }.width(80)
                 TableColumn("GPU") { p in Text(pct(p.gpu)).monospacedDigit() }.width(80)
                 TableColumn("Grafikspeicher") { p in Text(gib(p.vram)).monospacedDigit() }.width(125)
+                TableColumn("Status") { p in
+                    Text(p.awaiting ? "Messung ausstehend" : "Aktuell")
+                        .foregroundStyle(p.awaiting ? .secondary : .primary)
+                }.width(145)
                 TableColumn("Typ") { p in Text(p.kind).lineLimit(1) }.width(95)
             }
             HStack {
