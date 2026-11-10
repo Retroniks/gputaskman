@@ -48,10 +48,33 @@ struct GPUProcess: Identifiable {
                 let deviceName = adapter["name"] as? String ?? "Unbekannte GPU"
                 let total = (root["vram_total"] as? NSNumber)?.doubleValue ?? 0
                 let used = (root["vram_used"] as? NSNumber)?.doubleValue ?? 0
+                // GPU JSON does not contain cpu_pct. Sample native ps once for this refresh.
+                let ps = Process()
+                ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+                ps.arguments = ["-axo", "pid=,%cpu="]
+                let psOutput = Pipe()
+                ps.standardOutput = psOutput
+                ps.standardError = Pipe()
+                var cpuByPID: [Int: Double] = [:]
+                do {
+                    try ps.run()
+                    let psData = psOutput.fileHandleForReading.readDataToEndOfFile()
+                    ps.waitUntilExit()
+                    if ps.terminationStatus == 0, let psText = String(data: psData, encoding: .utf8) {
+                        for line in psText.split(separator: "\n") {
+                            let cols = line.split(whereSeparator: { $0.isWhitespace })
+                            if cols.count == 2, let pid = Int(cols[0]), let cpu = Double(cols[1]), cpu.isFinite {
+                                cpuByPID[pid] = cpu
+                            }
+                        }
+                    }
+                } catch {
+                    // Unknown CPU utilization remains nil, never a fabricated zero.
+                }
                 let rows = (root["processes"] as? [[String: Any]] ?? []).compactMap { row -> GPUProcess? in
                     guard let pid = row["pid"] as? Int else { return nil }
                     return GPUProcess(id: pid, name: row["name"] as? String ?? "PID \(pid)",
-                                      cpu: (row["cpu_pct"] as? NSNumber)?.doubleValue,
+                                      cpu: cpuByPID[pid],
                                       gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
                                       vram: (row["vram_bytes"] as? NSNumber)?.doubleValue)
                 }.sorted { ($0.gpu ?? 0) > ($1.gpu ?? 0) }
