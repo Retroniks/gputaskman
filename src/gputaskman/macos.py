@@ -111,6 +111,11 @@ def macos_version() -> str:
 
 
 def enumerate_adapters() -> list[Adapter]:
+    from .macos_intel_amd_adapter import intel_amd_adapter
+
+    amd = intel_amd_adapter()
+    if amd is not None:
+        return [amd]
     dev = parse_accelerator(_ioreg("-d", "1", "-c", "IOAccelerator"))
     if dev is None:
         return []
@@ -288,7 +293,10 @@ class MacCounters:
         else:
             if dev.allocated is not None:
                 adapters[ADAPTER_KEY].dedicated = float(dev.allocated)
-            self.device = NvDevice(index=0, name=dev.model, driver_model="Metal", mem_total=physical_memory(),
+            from .macos_intel_amd_adapter import intel_amd_adapter
+            amd = intel_amd_adapter()
+            self.device = NvDevice(index=0, name=amd.name if amd else dev.model, driver_model="Metal",
+                                   mem_total=amd.dedicated_vram if amd else physical_memory(),
                                    mem_used=dev.allocated, util_gpu=dev.utilization, source="IOKit")
         if clients is None:
             # A failed client query is not an empty client list: preserve the last valid rate baseline and
