@@ -42,6 +42,12 @@ ALWAYS_SHOWN = {"windowserver"}
 
 def _ioreg(*args: str) -> list | None:
     try:
+        # Intel Macs with AMD GPUs expose IOAccelerator user clients in its subtree.
+        # Apple Silicon retains the original AGXDeviceUserClient query.
+        if "AGXDeviceUserClient" in args:
+            from .macos_intel_amd import is_intel_amd, query_clients
+            if is_intel_amd():
+                return query_clients()
         out = subprocess.run(["ioreg", "-a", "-w", "0", "-r", *args], capture_output=True, timeout=5).stdout
         return plistlib.loads(out) if out.strip() else []
     except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException, ValueError):
