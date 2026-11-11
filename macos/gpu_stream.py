@@ -21,43 +21,54 @@ def package(snapshot: dict, cpu: dict[int, float], elapsed_ms: int) -> dict:
 def run() -> None:
     import psutil
     from gputaskman.collector import Collector
-    from gpu_roster import ProcessRoster
+    from gpu_process_inventory import ProcessInventory
     from gputaskman.report import to_dict
-    sampler = psutil.cpu_percent  # system-wide priming is separate from per-process data
-    sampler(interval=None)
-    cpu_pids: dict[int, psutil.Process] = {}
-    roster = ProcessRoster(ttl=60)
-    def process_identity(pid):
-        try:
-            p = psutil.Process(pid)
-            return p.create_time() if p.is_running() and p.status() != psutil.STATUS_ZOMBIE else None
-        except (psutil.Error, OSError):
-            return None
+    import psutil
+    psutil.cpu_percent(interval=None)
+    inventory = ProcessInventory()
+    cpu_pids = {}
+    def enumerate_living():
+        living = []
+        for p in psutil.process_iter(['pid', 'name', 'create_time', 'status']):
+            try:
+                info = p.info
+                if info['status'] == psutil.STATUS_ZOMBIE:
+                    continue
+                pid = info['pid']
+                started = info['create_time']
+                if started is None:
+                    continue
+                cached = cpu_pids.get(pid)
+                if cached is None or cached[0] != started:
+                    cpu_pids[pid] = (started, p)
+                    p.cpu_percent(interval=None)
+                    cpu = None
+                else:
+                    cpu = p.cpu_percent(interval=None)
+                living.append({'pid': pid, 'started_at': started, 'name': info.get('name') or 'PID %s' % pid,
+                               'cpu_pct': cpu})
+            except (psutil.Error, OSError, KeyError):
+                continue
+        active = {p['pid'] for p in living}
+        for pid in list(cpu_pids):
+            if pid not in active:
+                del cpu_pids[pid]
+        return living
     with_collector = Collector(scan_budget=0.0)
     try:
         while True:
             started = time.monotonic()
             snap = with_collector.sample()
-            known: dict[int, float] = {}
-            for row in snap.procs:
-                pid = row.pid
-                try:
-                    proc = cpu_pids.get(pid)
-                    if proc is None or not proc.is_running() or proc.create_time() != row.detail.create_time:
-                        proc = psutil.Process(pid)
-                        cpu_pids[pid] = proc
-                        proc.cpu_percent(interval=None)
-                        continue
-                    known[pid] = proc.cpu_percent(interval=None)
-                except (psutil.Error, OSError):
-                    cpu_pids.pop(pid, None)
-            cpu_pids = {p: obj for p, obj in cpu_pids.items() if any(x.pid == p for x in snap.procs)}
-            data = package(to_dict(snap), known, round((time.monotonic()-started)*1000))
-            raw = data["processes"]
-            data["observed_process_count"] = len(raw)
-            data["processes"] = roster.update(raw, process_identity)
-            data["awaiting_process_count"] = sum(r["measurement_state"] == "awaiting" for r in data["processes"])
-            data["roster_process_count"] = len(data["processes"])
+            living = enumerate_living()
+            raw = to_dict(snap)
+            observed = raw.get('processes') or []
+            raw['processes'] = inventory.update(living, observed)
+            raw['os_process_count'] = len(living)
+            raw['gpu_client_count'] = len(observed)
+            raw['gpu_current_count'] = sum(r['gpu_value_state'] == 'current' for r in raw['processes'])
+            raw['gpu_last_count'] = sum(r['gpu_value_state'] == 'last' for r in raw['processes'])
+            raw['sample_duration_ms'] = round((time.monotonic()-started)*1000)
+            data = raw
             print(json.dumps(data, separators=(",", ":"), allow_nan=False), flush=True)
             time.sleep(max(0.5, 2.0-(time.monotonic()-started)))
     finally:
