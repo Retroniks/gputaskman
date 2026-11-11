@@ -144,9 +144,13 @@ struct GPUProcess: Identifiable {
 struct GPUContentView: View {
     @ObservedObject var model: GPUViewModel
     @State private var visibility = 0
+    @State private var searchText = ""
     @State private var sortOrder = [KeyPathComparator(\GPUProcess.gpuKey, order: .reverse)]
     private var visibleItems: [GPUProcess] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         var rows = model.items.filter { p in
+            if !query.isEmpty && !p.name.localizedCaseInsensitiveContains(query)
+               && !String(p.id).contains(query) { return false }
             switch visibility {
             case 1: return p.gpuValueState == "current" || p.gpuValueState == "last"
             case 2: return p.gpuValueState == "current" && (p.gpu ?? 0) > 0
@@ -214,6 +218,10 @@ struct GPUContentView: View {
                     Text("GPU aktiv").tag(2)
                 }.pickerStyle(.segmented).frame(maxWidth: 470)
                 Spacer()
+                TextField("Prozess oder PID suchen", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 265)
+                    .accessibilityLabel("Prozess oder PID suchen")
             }
             Table(visibleItems, sortOrder: $sortOrder) {
                 TableColumn("Prozess", value: \GPUProcess.name) { p in
