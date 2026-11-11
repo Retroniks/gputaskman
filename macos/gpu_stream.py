@@ -22,6 +22,7 @@ def run() -> None:
     import psutil
     from gputaskman.collector import Collector
     from gpu_process_inventory import ProcessInventory
+    from gpu_active import active_summary
     from gputaskman.report import to_dict
     import psutil
     psutil.cpu_percent(interval=None)
@@ -67,6 +68,7 @@ def run() -> None:
             raw['gpu_client_count'] = len(observed)
             raw['gpu_current_count'] = sum(r['gpu_value_state'] == 'current' for r in raw['processes'])
             raw['gpu_last_count'] = sum(r['gpu_value_state'] == 'last' for r in raw['processes'])
+            raw.update(active_summary(raw['processes']))
             raw['sample_duration_ms'] = round((time.monotonic()-started)*1000)
             data = raw
             print(json.dumps(data, separators=(",", ":"), allow_nan=False), flush=True)

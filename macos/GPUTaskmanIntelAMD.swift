@@ -23,6 +23,8 @@ struct GPUProcess: Identifiable {
     @Published var count = 0
     @Published var observedCount = 0
     @Published var lastValueCount = 0
+    @Published var activeGPUCount = 0
+    @Published var topGPUText = "Keine GPU-Aktivität gemessen"
     private var worker: Process?
     private var reader: DispatchWorkItem?
     private var watchdog: Timer?
@@ -102,6 +104,14 @@ struct GPUProcess: Identifiable {
         let rawRows = root["processes"] as? [[String: Any]] ?? []
         observedCount = root["os_process_count"] as? Int ?? rawRows.count
         lastValueCount = root["gpu_last_count"] as? Int ?? 0
+        activeGPUCount = root["gpu_active_count"] as? Int ?? 0
+        if let top = root["gpu_top_process"] as? [String: Any],
+           let name = top["name"] as? String,
+           let load = (top["gpu_pct"] as? NSNumber)?.doubleValue {
+            topGPUText = "\(name) · " + String(format: "%.2f %%", load)
+        } else {
+            topGPUText = "Keine GPU-Aktivität gemessen"
+        }
         items = rawRows.compactMap { row -> GPUProcess? in
             guard let pid = row["pid"] as? Int else { return nil }
             return GPUProcess(id: pid, name: row["name"] as? String ?? "PID \(pid)",
@@ -129,7 +139,7 @@ struct GPUContentView: View {
         var rows = model.items.filter { p in
             switch visibility {
             case 1: return p.gpuValueState == "current" || p.gpuValueState == "last"
-            case 2: return (p.gpu ?? 0) > 0
+            case 2: return p.gpuValueState == "current" && (p.gpu ?? 0) > 0
             default: return true
             }
         }
@@ -175,6 +185,12 @@ struct GPUContentView: View {
                     Text("GPU-Gesamtbelegung inkl. System/Treiber; keine Summe der App-Werte")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+                Spacer()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("GPU-aktive Apps").foregroundStyle(.secondary)
+                    Text("\(model.activeGPUCount)").font(.title2.monospacedDigit())
+                    Text(model.topGPUText).font(.caption).lineLimit(1)
+                }.frame(maxWidth: 260, alignment: .leading)
                 Spacer()
                 VStack(alignment: .trailing) {
                     Text("Laufende Prozesse").foregroundStyle(.secondary)
@@ -242,6 +258,8 @@ struct GPUContentView: View {
                 Text(model.device).font(.headline)
                 Text("GPU: " + (model.gpuLoad.map { String(format: "%.1f %%", $0) } ?? "n/a"))
                 Text("VRAM: " + (model.used.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "n/a"))
+                Text("GPU-aktive Apps: \(model.activeGPUCount)")
+                Text(model.topGPUText).font(.caption)
                 Text(model.status).font(.caption).foregroundStyle(.secondary)
                 Button("Sampler neu starten") { model.restart() }
             }.padding(10).frame(width: 290)
