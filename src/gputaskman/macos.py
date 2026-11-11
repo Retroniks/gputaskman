@@ -314,6 +314,14 @@ class MacCounters:
         from .macos_intel_amd_vram import vram_used_from_entries
         amd_total = amd_adapter.dedicated_vram if amd_adapter is not None else 0
         amd_used = vram_used_from_entries(accel, amd_total) if amd_total else None
+        # The shallow accelerator sample can omit Radeon vramFreeBytes.
+        # Read the complete Intel IOAccelerator tree only on a missing sample.
+        # A separate source must be unambiguous; unknown remains unknown.
+        if amd_total and amd_used is None and accel is not None and amd_adapter is not None:
+            from .macos_intel_amd import query_clients
+            full_tree = query_clients()
+            if full_tree is not None:
+                amd_used = vram_used_from_entries(full_tree, amd_total)
         if dev is None:
             self.device = None  # no reading this time: never keep showing the last one as current
         else:

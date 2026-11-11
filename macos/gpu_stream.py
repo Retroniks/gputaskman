@@ -23,10 +23,12 @@ def run() -> None:
     from gputaskman.collector import Collector
     from gpu_process_inventory import ProcessInventory
     from gpu_active import active_summary
+    from gpu_vram_state import LastVRAM
     from gputaskman.report import to_dict
     import psutil
     psutil.cpu_percent(interval=None)
     inventory = ProcessInventory()
+    vram_state = LastVRAM()
     cpu_pids = {}
     def enumerate_living():
         living = []
@@ -61,7 +63,7 @@ def run() -> None:
             started = time.monotonic()
             snap = with_collector.sample()
             living = enumerate_living()
-            raw = to_dict(snap)
+            raw = vram_state.apply(to_dict(snap))
             observed = raw.get('processes') or []
             raw['processes'] = inventory.update(living, observed)
             raw['os_process_count'] = len(living)

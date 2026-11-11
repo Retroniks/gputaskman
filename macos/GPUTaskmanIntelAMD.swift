@@ -16,6 +16,8 @@ struct GPUProcess: Identifiable {
     @Published var device = "AMD Radeon RX 580"
     @Published var total: Double?
     @Published var used: Double?
+    @Published var vramState = "unavailable"
+    @Published var vramAge: Double?
     @Published var gpuLoad: Double?
     @Published var items: [GPUProcess] = []
     @Published var status = "GPU-Messung wird gestartet …"
@@ -99,6 +101,8 @@ struct GPUProcess: Identifiable {
         device = adapter["name"] as? String ?? device
         total = (root["vram_total"] as? NSNumber)?.doubleValue
         used = (root["vram_used"] as? NSNumber)?.doubleValue
+        vramState = root["vram_value_state"] as? String ?? "unavailable"
+        vramAge = (root["vram_value_age_s"] as? NSNumber)?.doubleValue
         let dev = root["device"] as? [String: Any] ?? [:]
         gpuLoad = (dev["util_gpu"] as? NSNumber)?.doubleValue
         let rawRows = root["processes"] as? [[String: Any]] ?? []
@@ -182,6 +186,13 @@ struct GPUContentView: View {
                     Text("Grafikspeicher").foregroundStyle(.secondary)
                     Text("\(gib(model.used)) / \(gib(model.total))").font(.title3.monospacedDigit())
                     ProgressView(value: ratio)
+                    if model.vramState == "last" {
+                        Text("Letzter gemessener Wert · vor \(Int(model.vramAge ?? 0)) s")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if model.vramState == "unavailable" {
+                        Text("VRAM-Messung noch nicht verfügbar")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("GPU-Gesamtbelegung inkl. System/Treiber; keine Summe der App-Werte")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
