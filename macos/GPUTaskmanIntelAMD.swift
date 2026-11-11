@@ -11,6 +11,12 @@ struct GPUProcess: Identifiable {
     let kind: String
     let gpuValueState: String
     let gpuAge: Double?
+    // Lexically sortable fixed-width keys preserve numeric order in native Table headers.
+    var pidKey: String { String(format: "%010d", id) }
+    var cpuKey: String { String(format: "%020.6f", cpu ?? -1) }
+    var gpuKey: String { String(format: "%020.6f", gpu ?? -1) }
+    var vramKey: String { String(format: "%020.0f", vram ?? -1) }
+
 }
 @MainActor final class GPUViewModel: ObservableObject {
     @Published var device = "AMD Radeon RX 580"
@@ -138,7 +144,7 @@ struct GPUProcess: Identifiable {
 struct GPUContentView: View {
     @ObservedObject var model: GPUViewModel
     @State private var visibility = 0
-    @State private var sorting = 0
+    @State private var sortOrder = [KeyPathComparator(\GPUProcess.gpuKey, order: .reverse)]
     private var visibleItems: [GPUProcess] {
         var rows = model.items.filter { p in
             switch visibility {
@@ -147,21 +153,14 @@ struct GPUContentView: View {
             default: return true
             }
         }
-        rows.sort { a, b in
-            switch sorting {
-            case 1: return (a.cpu ?? -1, a.name) > (b.cpu ?? -1, b.name)
-            case 2: return (a.vram ?? -1, a.name) > (b.vram ?? -1, b.name)
-            case 3: return a.name.localizedStandardCompare(b.name) == .orderedAscending
-            default: return (a.gpu ?? -1, a.name) > (b.gpu ?? -1, b.name)
-            }
-        }
+        rows.sort(using: sortOrder)
         return rows
     }
     private func gib(_ n: Double?) -> String {
-        n.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "n/a"
+        n.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "—"
     }
     private func pct(_ n: Double?) -> String {
-        n.map { String(format: "%.1f %%", $0) } ?? "n/a"
+        n.map { String(format: "%.1f %%", $0) } ?? "—"
     }
     private var ratio: Double {
         guard let t = model.total, let u = model.used, t > 0 else { return 0 }
@@ -172,10 +171,10 @@ struct GPUContentView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.device).font(.title2.bold())
-                    Text("GPU Task Manager · macOS Intel / AMD").foregroundStyle(.secondary)
+                    Text("GPU-Monitor").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Sampler neu starten") { model.restart() }
+                Button("Messung neu starten") { model.restart() }
             }
             HStack(spacing: 24) {
                 VStack(alignment: .leading) {
@@ -215,25 +214,19 @@ struct GPUContentView: View {
                     Text("GPU aktiv").tag(2)
                 }.pickerStyle(.segmented).frame(maxWidth: 470)
                 Spacer()
-                Picker("Sortieren", selection: $sorting) {
-                    Text("GPU").tag(0)
-                    Text("CPU").tag(1)
-                    Text("Grafikspeicher").tag(2)
-                    Text("Name").tag(3)
-                }.frame(width: 205)
             }
-            Table(visibleItems) {
-                TableColumn("Prozess") { p in
+            Table(visibleItems, sortOrder: $sortOrder) {
+                TableColumn("Prozess", value: \GPUProcess.name) { p in
                     HStack {
                         Image(nsImage: NSRunningApplication(processIdentifier: pid_t(p.id))?.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
                             .resizable().frame(width: 16, height: 16)
                         Text(p.name).lineLimit(1)
                     }
                 }.width(min: 180, ideal: 260)
-                TableColumn("PID") { p in Text("\(p.id)").monospacedDigit() }.width(65)
-                TableColumn("CPU") { p in Text(pct(p.cpu)).monospacedDigit() }.width(80)
-                TableColumn("GPU") { p in Text(pct(p.gpu)).monospacedDigit() }.width(80)
-                TableColumn("Grafikspeicher") { p in
+                TableColumn("PID", value: \GPUProcess.pidKey) { p in Text(String(p.id)).monospacedDigit() }.width(65)
+                TableColumn("CPU", value: \GPUProcess.cpuKey) { p in Text(pct(p.cpu)).monospacedDigit() }.width(80)
+                TableColumn("GPU", value: \GPUProcess.gpuKey) { p in Text(pct(p.gpu)).monospacedDigit() }.width(80)
+                TableColumn("Grafikspeicher", value: \GPUProcess.vramKey) { p in
                     Text(gib(p.vram)).monospacedDigit()
                         .foregroundStyle(p.gpuValueState == "last" ? .secondary : .primary)
                 }.width(125)
@@ -272,7 +265,7 @@ struct GPUContentView: View {
                 Text("GPU-aktive Apps: \(model.activeGPUCount)")
                 Text(model.topGPUText).font(.caption)
                 Text(model.status).font(.caption).foregroundStyle(.secondary)
-                Button("Sampler neu starten") { model.restart() }
+                Button("Messung neu starten") { model.restart() }
             }.padding(10).frame(width: 290)
             .onAppear { model.start() }
         }
