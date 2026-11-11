@@ -91,6 +91,17 @@ def parse_clients(entries: list | None) -> dict[int, dict[int, int]]:
     return dict(out)
 
 
+def keep_gpu_client(intel_amd: bool, gpu_pct: float | None, name: str) -> bool:
+    """Preserve Intel Radeon GPU clients even while idle or permission-limited.
+
+    Apple Silicon retains its original idle-process suppression.
+    An unknown GPU rate stays unknown; this function never makes one up.
+    """
+    if intel_amd:
+        return True
+    return gpu_pct is not None and gpu_pct >= 0.5 or name.lower() in ALWAYS_SHOWN
+
+
 def graphics_bytes(process: dict) -> int:
     """footprint JSON: dirty bytes of the categories macOS charges to graphics."""
     return int(sum(v.get("dirty", 0) for k, v in (process.get("categories") or {}).items() if k.endswith("(graphics)")))
@@ -357,7 +368,7 @@ class MacCounters:
                     g.dedicated = float(size)
             else:
                 g.attributed = False  # footprint needs root for other users' processes
-                if (pct is None or pct < 0.5) and self._name(pid).lower() not in ALWAYS_SHOWN:
+                if not keep_gpu_client(amd_adapter is not None, pct, self._name(pid)):
                     continue
             procs[ADAPTER_KEY][pid] = g
         self._prev, self._last = current, now
