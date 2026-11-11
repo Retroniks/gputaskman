@@ -123,6 +123,26 @@ struct GPUProcess: Identifiable {
 
 struct GPUContentView: View {
     @ObservedObject var model: GPUViewModel
+    @State private var visibility = 0
+    @State private var sorting = 0
+    private var visibleItems: [GPUProcess] {
+        var rows = model.items.filter { p in
+            switch visibility {
+            case 1: return p.gpuValueState == "current" || p.gpuValueState == "last"
+            case 2: return (p.gpu ?? 0) > 0
+            default: return true
+            }
+        }
+        rows.sort { a, b in
+            switch sorting {
+            case 1: return (a.cpu ?? -1, a.name) > (b.cpu ?? -1, b.name)
+            case 2: return (a.vram ?? -1, a.name) > (b.vram ?? -1, b.name)
+            case 3: return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            default: return (a.gpu ?? -1, a.name) > (b.gpu ?? -1, b.name)
+            }
+        }
+        return rows
+    }
     private func gib(_ n: Double?) -> String {
         n.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "n/a"
     }
@@ -161,7 +181,21 @@ struct GPUContentView: View {
                     Text("\(model.observedCount)").font(.title2.monospacedDigit())
                 }
             }.padding(12).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-            Table(model.items) {
+            HStack(spacing: 12) {
+                Picker("Anzeigen", selection: $visibility) {
+                    Text("Alle laufenden").tag(0)
+                    Text("Mit GPU-Daten").tag(1)
+                    Text("GPU aktiv").tag(2)
+                }.pickerStyle(.segmented).frame(maxWidth: 470)
+                Spacer()
+                Picker("Sortieren", selection: $sorting) {
+                    Text("GPU").tag(0)
+                    Text("CPU").tag(1)
+                    Text("Grafikspeicher").tag(2)
+                    Text("Name").tag(3)
+                }.frame(width: 205)
+            }
+            Table(visibleItems) {
                 TableColumn("Prozess") { p in
                     HStack {
                         Image(nsImage: NSRunningApplication(processIdentifier: pid_t(p.id))?.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
@@ -187,7 +221,7 @@ struct GPUContentView: View {
                 TableColumn("Typ") { p in Text(p.kind).lineLimit(1) }.width(95)
             }
             HStack {
-                Text(model.status).foregroundStyle(.secondary)
+                Text("\(visibleItems.count) angezeigt · " + model.status).foregroundStyle(.secondary)
                 Spacer()
                 Text(model.updated.map { "Stand: " + $0.formatted(date: .omitted, time: .standard) } ?? "Noch keine Messung")
                     .foregroundStyle(.secondary)
