@@ -86,8 +86,18 @@ def parse_clients(entries: list | None) -> dict[int, dict[int, int]]:
         if not m:
             continue
         cid = e.get("IORegistryEntryID", -1 - i)
-        out[int(m[1])][cid] = sum(int(u.get("accumulatedGPUTime", 0))
-                                  for u in e.get("AppUsage") or [] if isinstance(u, dict))
+        usage_times = [int(u["accumulatedGPUTime"]) for u in e.get("AppUsage") or []
+                       if isinstance(u, dict) and type(u.get("accumulatedGPUTime")) is int]
+        # Intel Radeon IOAccelerator can expose the cumulative GPU time on the
+        # client node itself rather than AppUsage. These are alternative
+        # representations: never add both and double-count the same work.
+        direct_time = e.get("accumulatedGPUTime")
+        if usage_times:
+            out[int(m[1])][cid] = sum(usage_times)
+        elif type(direct_time) is int and direct_time >= 0:
+            out[int(m[1])][cid] = direct_time
+        else:
+            out[int(m[1])][cid] = 0  # existing no-timing client behavior
     return dict(out)
 
 
