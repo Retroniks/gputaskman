@@ -145,6 +145,7 @@ struct GPUContentView: View {
     @ObservedObject var model: GPUViewModel
     @State private var visibility = 0
     @State private var searchText = ""
+    @State private var selectedPIDs: Set<Int> = []
     @State private var sortOrder = [KeyPathComparator(\GPUProcess.gpuKey, order: .reverse)]
     private var visibleItems: [GPUProcess] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,7 +224,7 @@ struct GPUContentView: View {
                     .frame(width: 265)
                     .accessibilityLabel("Prozess oder PID suchen")
             }
-            Table(visibleItems, sortOrder: $sortOrder) {
+            Table(visibleItems, selection: $selectedPIDs, sortOrder: $sortOrder) {
                 TableColumn("Prozess", value: \GPUProcess.name) { p in
                     HStack {
                         Image(nsImage: NSRunningApplication(processIdentifier: pid_t(p.id))?.icon ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!)
@@ -247,6 +248,33 @@ struct GPUContentView: View {
                               "Nicht alle GPU-Speicherbelegungen können einzelnen Apps zugeordnet werden")
                 }.width(120)
                 TableColumn("Typ") { p in Text(p.kind).lineLimit(1) }.width(95)
+            }
+            if let pid = selectedPIDs.first,
+               let process = model.items.first(where: { $0.id == pid }) {
+                HStack(spacing: 18) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(process.name).font(.headline).lineLimit(1)
+                        Text("PID \(process.id) · \(process.kind)").foregroundStyle(.secondary)
+                            .font(.caption)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("CPU: " + pct(process.cpu))
+                        Text("GPU: " + pct(process.gpu))
+                    }.monospacedDigit()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Grafikspeicher: " + gib(process.vram))
+                        Text(process.gpuValueState == "current" ? "GPU-Werte: aktuell" :
+                             process.gpuValueState == "last" ?
+                             "GPU-Werte: vor \(Int(process.gpuAge ?? 0)) s gemessen" :
+                             "GPU-Werte: nicht verfügbar").foregroundStyle(.secondary)
+                            .font(.caption)
+                    }.frame(maxWidth: 270, alignment: .leading)
+                    Button("PID kopieren") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(String(process.id), forType: .string)
+                    }
+                }.padding(12)
+                 .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
                 Text("\(visibleItems.count) angezeigt · " + model.status).foregroundStyle(.secondary)
