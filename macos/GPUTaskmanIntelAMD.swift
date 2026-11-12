@@ -33,6 +33,10 @@ struct GPUProcess: Identifiable {
     @Published var lastValueCount = 0
     @Published var activeGPUCount = 0
     @Published var topGPUText = "Keine GPU-Aktivität gemessen"
+    @Published var gpuHistory: [Double?] = []
+    @Published var vramHistory: [Double?] = []
+    @Published var topConsumers: [GPUProcess] = []
+    @Published var currentGPUClients = 0
     private var worker: Process?
     private var reader: DispatchWorkItem?
     private var watchdog: Timer?
@@ -111,6 +115,11 @@ struct GPUProcess: Identifiable {
         vramAge = (root["vram_value_age_s"] as? NSNumber)?.doubleValue
         let dev = root["device"] as? [String: Any] ?? [:]
         gpuLoad = (dev["util_gpu"] as? NSNumber)?.doubleValue
+        gpuHistory.append(gpuLoad)
+        if gpuHistory.count > 90 { gpuHistory.removeFirst(gpuHistory.count - 90) }
+        vramHistory.append(vramState == "current" ? used.map { $0 / 1073741824 } : nil)
+        if vramHistory.count > 90 { vramHistory.removeFirst(vramHistory.count - 90) }
+        currentGPUClients = root["gpu_client_count"] as? Int ?? 0
         let rawRows = root["processes"] as? [[String: Any]] ?? []
         observedCount = root["os_process_count"] as? Int ?? rawRows.count
         lastValueCount = root["gpu_last_count"] as? Int ?? 0
@@ -134,6 +143,9 @@ struct GPUProcess: Identifiable {
         }.sorted {
             return ($0.gpu ?? -1, $0.vram ?? -1, $0.name) > ($1.gpu ?? -1, $1.vram ?? -1, $1.name)
         }
+        topConsumers = items.filter { $0.gpuValueState == "current" && ($0.gpu ?? 0) > 0 }
+            .sorted { ($0.gpu ?? 0) > ($1.gpu ?? 0) }
+        if topConsumers.count > 5 { topConsumers = Array(topConsumers.prefix(5)) }
         count += 1
         updated = Date()
         status = "\(observedCount) laufende Prozesse · \(lastValueCount) letzte GPU-Messwerte · Probe \(count)"
@@ -141,9 +153,43 @@ struct GPUProcess: Identifiable {
     deinit { worker?.terminate() }
 }
 
+struct GPUHistoryPanel: View {
+    let title: String
+    let values: [Double?]
+    let limit: Double
+    let suffix: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text(values.last.flatMap { $0 }.map { String(format: "%.1f%@", $0, suffix) } ?? "—")
+                    .font(.caption.monospacedDigit())
+            }
+            GeometryReader { frame in
+                Path { path in
+                    let count = max(values.count - 1, 1)
+                    var connected = false
+                    for (i, item) in values.enumerated() {
+                        guard let value = item else { connected = false; continue }
+                        let x = frame.size.width * CGFloat(i) / CGFloat(count)
+                        let fraction = min(max(value / max(limit, 0.001), 0.0), 1.0)
+                        let y = frame.size.height * (1 - CGFloat(fraction))
+                        if connected { path.addLine(to: CGPoint(x: x, y: y)) }
+                        else { path.move(to: CGPoint(x: x, y: y)); connected = true }
+                    }
+                }
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+            }
+            .frame(height: 44)
+            .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 4))
+        }
+    }
+}
+
 struct GPUContentView: View {
     @ObservedObject var model: GPUViewModel
-    @State private var visibility = 0
+    @State private var visibility = 1
     @State private var searchText = ""
     @State private var selectedPIDs: Set<Int> = []
     @State private var sortOrder = [KeyPathComparator(\GPUProcess.gpuKey, order: .reverse)]
@@ -212,6 +258,44 @@ struct GPUContentView: View {
                     Text("\(model.observedCount)").font(.title2.monospacedDigit())
                 }
             }.padding(12).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Text("Live-Verlauf").font(.headline)
+                        Spacer()
+                        Text("Letzte 90 Messungen").font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 18) {
+                        GPUHistoryPanel(title: "GPU", values: model.gpuHistory, limit: 100, suffix: " %")
+                        GPUHistoryPanel(title: "VRAM", values: model.vramHistory,
+                                        limit: max((model.total ?? 1) / 1073741824, 1), suffix: " GiB")
+                    }
+                    Text("VRAM-Verlauf: echte aktuelle Messungen · Unterbrechungen bleiben sichtbar")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(.quaternary.opacity(0.17), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("GPU-Prozesse").font(.headline)
+                    Text("\(model.currentGPUClients) Clients erfasst · \(model.activeGPUCount) aktiv")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.topConsumers) { p in
+                        HStack(spacing: 8) {
+                            Text(p.name).lineLimit(1)
+                            Spacer()
+                            Text(pct(p.gpu)).monospacedDigit()
+                        }.font(.caption)
+                    }
+                    if model.topConsumers.isEmpty {
+                        Text("Aktuell keine GPU-Aktivität gemessen")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 290, alignment: .leading)
+                .padding(10)
+                .background(.quaternary.opacity(0.17), in: RoundedRectangle(cornerRadius: 8))
+            }
             HStack(spacing: 12) {
                 Picker("Anzeigen", selection: $visibility) {
                     Text("Alle laufenden").tag(0)
@@ -292,7 +376,7 @@ struct GPUContentView: View {
 @main struct GPUTaskmanIntelAMDApp: App {
     @StateObject private var model = GPUViewModel()
     var body: some Scene {
-        WindowGroup("GPU Task Manager") { GPUContentView(model: model) }
+        WindowGroup("GPU-Monitor") { GPUContentView(model: model) }
         MenuBarExtra("GPU", systemImage: "cpu") {
             VStack(alignment: .leading, spacing: 9) {
                 Text(model.device).font(.headline)
