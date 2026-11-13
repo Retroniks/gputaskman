@@ -243,7 +243,7 @@ struct GPUContentView: View {
                         Text("VRAM-Messung noch nicht verfügbar")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("GPU-Gesamtbelegung inkl. System/Treiber; keine Summe der App-Werte")
+                    Text("VRAM ist geräteweit gemessen. Eine belastbare Zuordnung pro PID fehlt.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -319,7 +319,7 @@ struct GPUContentView: View {
                 TableColumn("PID", value: \GPUProcess.pidKey) { p in Text(String(p.id)).monospacedDigit() }.width(65)
                 TableColumn("CPU", value: \GPUProcess.cpuKey) { p in Text(pct(p.cpu)).monospacedDigit() }.width(80)
                 TableColumn("GPU", value: \GPUProcess.gpuKey) { p in Text(pct(p.gpu)).monospacedDigit() }.width(80)
-                TableColumn("Grafikspeicher", value: \GPUProcess.vramKey) { p in
+                TableColumn("Grafik-Footprint", value: \GPUProcess.vramKey) { p in
                     Text(gib(p.vram)).monospacedDigit()
                         .foregroundStyle(p.gpuValueState == "last" ? .secondary : .primary)
                 }.width(125)
@@ -346,7 +346,7 @@ struct GPUContentView: View {
                         Text("GPU: " + pct(process.gpu))
                     }.monospacedDigit()
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Grafikspeicher: " + gib(process.vram))
+                        Text("Grafik-Footprint: " + gib(process.vram))
                         Text(process.gpuValueState == "current" ? "GPU-Werte: aktuell" :
                              process.gpuValueState == "last" ?
                              "GPU-Werte: vor \(Int(process.gpuAge ?? 0)) s gemessen" :
@@ -361,7 +361,8 @@ struct GPUContentView: View {
                  .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
-                Text("\(visibleItems.count) angezeigt · " + model.status).foregroundStyle(.secondary)
+                Text("\(visibleItems.count) angezeigt · Grafik-Footprint ist kein RX-580-VRAM-Zähler pro App")
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Text(model.updated.map { "Stand: " + $0.formatted(date: .omitted, time: .standard) } ?? "Noch keine Messung")
                     .foregroundStyle(.secondary)
