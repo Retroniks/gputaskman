@@ -370,6 +370,33 @@ struct GPUContentView: View {
         }
         .padding(18)
         .frame(minWidth: 1040, minHeight: 560)
+        .onAppear {
+            model.start()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+private struct GPUMenuPanel: View {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var model: GPUViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Button("Hauptfenster öffnen") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Divider()
+            Text(model.device).font(.headline)
+            Text("GPU: " + (model.gpuLoad.map { String(format: "%.1f %%", $0) } ?? "—"))
+            Text("VRAM: " + (model.used.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "—"))
+            Text("GPU-aktive Apps: \(model.activeGPUCount)")
+            Text(model.topGPUText).font(.caption)
+            Text(model.status).font(.caption).foregroundStyle(.secondary)
+            Button("Messung neu starten") { model.restart() }
+        }
+        .padding(10).frame(width: 290)
         .onAppear { model.start() }
     }
 }
@@ -377,18 +404,9 @@ struct GPUContentView: View {
 @main struct GPUTaskmanIntelAMDApp: App {
     @StateObject private var model = GPUViewModel()
     var body: some Scene {
-        WindowGroup("GPU-Monitor") { GPUContentView(model: model) }
+        WindowGroup("GPU-Monitor", id: "main") { GPUContentView(model: model) }
         MenuBarExtra("GPU", systemImage: "cpu") {
-            VStack(alignment: .leading, spacing: 9) {
-                Text(model.device).font(.headline)
-                Text("GPU: " + (model.gpuLoad.map { String(format: "%.1f %%", $0) } ?? "n/a"))
-                Text("VRAM: " + (model.used.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "n/a"))
-                Text("GPU-aktive Apps: \(model.activeGPUCount)")
-                Text(model.topGPUText).font(.caption)
-                Text(model.status).font(.caption).foregroundStyle(.secondary)
-                Button("Messung neu starten") { model.restart() }
-            }.padding(10).frame(width: 290)
-            .onAppear { model.start() }
+            GPUMenuPanel(model: model)
         }
     }
 }
