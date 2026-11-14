@@ -66,6 +66,12 @@ def run() -> None:
             raw = vram_state.apply(to_dict(snap))
             observed = raw.get('processes') or []
             raw['processes'] = inventory.update(living, observed)
+            # Original metal backend calls the host-RAM graphics footprint vram_bytes.
+            # Make the source explicit for the native Intel/AMD UI; per-PID
+            # discrete Radeon VRAM remains unmeasured, not zero.
+            for process in raw['processes']:
+                process['graphics_footprint_bytes'] = process.get('vram_bytes')
+                process['dedicated_vram_bytes'] = None
             raw['os_process_count'] = len(living)
             raw['gpu_client_count'] = len(observed)
             raw['gpu_current_count'] = sum(r['gpu_value_state'] == 'current' for r in raw['processes'])

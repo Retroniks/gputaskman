@@ -7,7 +7,8 @@ struct GPUProcess: Identifiable {
     let name: String
     let cpu: Double?
     let gpu: Double?
-    let vram: Double?
+    let graphicsFootprint: Double?
+    let gpuClientObserved: Bool
     let kind: String
     let gpuValueState: String
     let gpuAge: Double?
@@ -15,7 +16,7 @@ struct GPUProcess: Identifiable {
     var pidKey: String { String(format: "%010d", id) }
     var cpuKey: String { String(format: "%020.6f", cpu ?? -1) }
     var gpuKey: String { String(format: "%020.6f", gpu ?? -1) }
-    var vramKey: String { String(format: "%020.0f", vram ?? -1) }
+    var graphicsFootprintKey: String { String(format: "%020.0f", graphicsFootprint ?? -1) }
 
 }
 @MainActor final class GPUViewModel: ObservableObject {
@@ -37,6 +38,8 @@ struct GPUProcess: Identifiable {
     @Published var vramHistory: [Double?] = []
     @Published var topConsumers: [GPUProcess] = []
     @Published var currentGPUClients = 0
+    @Published var measuredGraphicsClients = 0
+    @Published var nonzeroGraphicsClients = 0
     private var worker: Process?
     private var reader: DispatchWorkItem?
     private var watchdog: Timer?
@@ -136,15 +139,19 @@ struct GPUProcess: Identifiable {
             return GPUProcess(id: pid, name: row["name"] as? String ?? "PID \(pid)",
                               cpu: (row["cpu_pct"] as? NSNumber)?.doubleValue,
                               gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
-                              vram: (row["vram_bytes"] as? NSNumber)?.doubleValue,
+                              graphicsFootprint: (row["graphics_footprint_bytes"] as? NSNumber)?.doubleValue,
+                              gpuClientObserved: row["gpu_client_observed"] as? Bool ?? false,
                               kind: row["kind"] as? String ?? "",
                               gpuValueState: row["gpu_value_state"] as? String ?? "unavailable",
                               gpuAge: (row["gpu_value_age_s"] as? NSNumber)?.doubleValue)
         }.sorted {
-            return ($0.gpu ?? -1, $0.vram ?? -1, $0.name) > ($1.gpu ?? -1, $1.vram ?? -1, $1.name)
+            return ($0.graphicsFootprint ?? -1, $0.gpu ?? -1, $0.name) >
+                   ($1.graphicsFootprint ?? -1, $1.gpu ?? -1, $1.name)
         }
-        topConsumers = items.filter { $0.gpuValueState == "current" && ($0.gpu ?? 0) > 0 }
-            .sorted { ($0.gpu ?? 0) > ($1.gpu ?? 0) }
+        measuredGraphicsClients = items.filter { $0.gpuClientObserved && $0.graphicsFootprint != nil }.count
+        nonzeroGraphicsClients = items.filter { $0.gpuClientObserved && ($0.graphicsFootprint ?? 0) > 0 }.count
+        topConsumers = items.filter { $0.gpuClientObserved && ($0.graphicsFootprint ?? 0) > 0 }
+            .sorted { ($0.graphicsFootprint ?? 0) > ($1.graphicsFootprint ?? 0) }
         if topConsumers.count > 5 { topConsumers = Array(topConsumers.prefix(5)) }
         count += 1
         updated = Date()
@@ -192,7 +199,7 @@ struct GPUContentView: View {
     @State private var visibility = 1
     @State private var searchText = ""
     @State private var selectedPIDs: Set<Int> = []
-    @State private var sortOrder = [KeyPathComparator(\GPUProcess.gpuKey, order: .reverse)]
+    @State private var sortOrder = [KeyPathComparator(\GPUProcess.graphicsFootprintKey, order: .reverse)]
     private var visibleItems: [GPUProcess] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         var rows = model.items.filter { p in
@@ -277,18 +284,18 @@ struct GPUContentView: View {
                 .padding(10)
                 .background(.quaternary.opacity(0.17), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("GPU-Prozesse").font(.headline)
-                    Text("\(model.currentGPUClients) Clients erfasst · \(model.activeGPUCount) aktiv")
+                    Text("Grafik-Speicher je PID").font(.headline)
+                    Text("\(model.measuredGraphicsClients)/\(model.currentGPUClients) GPU-Clients mit Messwert")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(model.topConsumers) { p in
                         HStack(spacing: 8) {
                             Text(p.name).lineLimit(1)
                             Spacer()
-                            Text(pct(p.gpu)).monospacedDigit()
+                            Text(gib(p.graphicsFootprint)).monospacedDigit()
                         }.font(.caption)
                     }
                     if model.topConsumers.isEmpty {
-                        Text("Aktuell keine GPU-Aktivität gemessen")
+                        Text("Noch kein Grafik-Footprint gemessen")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -319,8 +326,8 @@ struct GPUContentView: View {
                 TableColumn("PID", value: \GPUProcess.pidKey) { p in Text(String(p.id)).monospacedDigit() }.width(65)
                 TableColumn("CPU", value: \GPUProcess.cpuKey) { p in Text(pct(p.cpu)).monospacedDigit() }.width(80)
                 TableColumn("GPU", value: \GPUProcess.gpuKey) { p in Text(pct(p.gpu)).monospacedDigit() }.width(80)
-                TableColumn("Grafik-Footprint", value: \GPUProcess.vramKey) { p in
-                    Text(gib(p.vram)).monospacedDigit()
+                TableColumn("Grafik-Footprint", value: \GPUProcess.graphicsFootprintKey) { p in
+                    Text(gib(p.graphicsFootprint)).monospacedDigit()
                         .foregroundStyle(p.gpuValueState == "last" ? .secondary : .primary)
                 }.width(125)
                 TableColumn("GPU-Daten") { p in
@@ -346,7 +353,7 @@ struct GPUContentView: View {
                         Text("GPU: " + pct(process.gpu))
                     }.monospacedDigit()
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Grafik-Footprint: " + gib(process.vram))
+                        Text("Grafik-Footprint: " + gib(process.graphicsFootprint))
                         Text(process.gpuValueState == "current" ? "GPU-Werte: aktuell" :
                              process.gpuValueState == "last" ?
                              "GPU-Werte: vor \(Int(process.gpuAge ?? 0)) s gemessen" :
@@ -361,7 +368,7 @@ struct GPUContentView: View {
                  .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
-                Text("\(visibleItems.count) angezeigt · Grafik-Footprint ist kein RX-580-VRAM-Zähler pro App")
+                Text("\(visibleItems.count) angezeigt · \(model.nonzeroGraphicsClients) positive Grafik-Messwerte · kein dedizierter VRAM je PID")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(model.updated.map { "Stand: " + $0.formatted(date: .omitted, time: .standard) } ?? "Noch keine Messung")

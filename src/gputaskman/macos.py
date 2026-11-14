@@ -112,9 +112,35 @@ def keep_gpu_client(intel_amd: bool, gpu_pct: float | None, name: str) -> bool:
     return gpu_pct is not None and gpu_pct >= 0.5 or name.lower() in ALWAYS_SHOWN
 
 
-def graphics_bytes(process: dict) -> int:
-    """footprint JSON: dirty bytes of the categories macOS charges to graphics."""
-    return int(sum(v.get("dirty", 0) for k, v in (process.get("categories") or {}).items() if k.endswith("(graphics)")))
+def graphics_bytes(process: dict) -> int | None:
+    """Host-RAM graphics footprint; never dedicated VRAM on Intel AMD.
+
+    Prefer footprint's explicit (graphics) categories. Some macOS builds instead
+    expose IOAccelerator and IOSurface as standalone categories; only use these
+    when no graphics-tagged category exists, avoiding double counting. Missing
+    categories remain unknown, whereas a measured 0 remains a real zero.
+    """
+    categories = process.get("categories")
+    if not isinstance(categories, dict):
+        return None
+
+    def dirty_values(predicate):
+        values = []
+        for name, stats in categories.items():
+            if not isinstance(name, str) or not predicate(name) or not isinstance(stats, dict):
+                continue
+            value = stats.get("dirty")
+            if type(value) in (int, float) and 0 <= value < float("inf"):
+                values.append(int(value))
+        return values
+
+    explicit = dirty_values(lambda name: name.endswith("(graphics)"))
+    if explicit:
+        return sum(explicit)
+    standalone = dirty_values(lambda name: (
+        ("ioaccelerator" in name.lower() or "iosurface" in name.lower())
+        and "(graphics)" not in name.lower()))
+    return sum(standalone) if standalone else None
 
 
 def physical_memory() -> int:
@@ -310,7 +336,11 @@ class MacCounters:
         adapters: dict[int, AdapterGpu] = defaultdict(AdapterGpu)
         dev = parse_accelerator(accel)
         from .macos_intel_amd_adapter import intel_amd_adapter
-        amd_adapter = intel_amd_adapter() if os.uname().machine == 'x86_64' else None
+        # An explicit Apple Silicon accelerator fixture is not the host's Radeon.
+        # Keep real Intel AMD samples on the hardware-specific counter path.
+        fixture_is_apple_silicon = bool(dev is not None and re.match(r'^Apple M[0-9]+(?:$|[^0-9])', dev.model))
+        amd_adapter = (intel_amd_adapter() if os.uname().machine == 'x86_64'
+                       and not fixture_is_apple_silicon else None)
         from .macos_intel_amd_vram import vram_used_from_entries
         amd_total = amd_adapter.dedicated_vram if amd_adapter is not None else 0
         amd_used = vram_used_from_entries(accel, amd_total) if amd_total else None
@@ -329,8 +359,8 @@ class MacCounters:
                 adapters[ADAPTER_KEY].dedicated = float(amd_used)
             elif amd_adapter is None and dev.allocated is not None:
                 adapters[ADAPTER_KEY].dedicated = float(dev.allocated)
-            from .macos_intel_amd_adapter import intel_amd_adapter
-            amd = intel_amd_adapter()
+            # Use the same adapter decision for both memory source and device label.
+            amd = amd_adapter
             self.device = NvDevice(index=0, name=amd.name if amd else dev.model, driver_model="Metal",
                                    mem_total=amd.dedicated_vram if amd else physical_memory(),
                                    mem_used=amd_used if amd_adapter is not None else dev.allocated,
