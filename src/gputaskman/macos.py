@@ -197,8 +197,13 @@ class FootprintPoller:
     FAIL_LIMIT = 3  # consecutive failures before backing off (one timeout under load is not "denied")
     FAIL_RETRY = 60.0
 
-    def __init__(self, run=subprocess.run, clock=time.monotonic) -> None:
+    def __init__(self, run=subprocess.run, clock=time.monotonic, batch_size: int = 1) -> None:
         self._run = run
+        # Existing single-process mocks retain the original path. Native Radeon
+        # runtime uses bounded batches. First batch is checked against singles.
+        self.batch_size = max(1, min(int(batch_size), 12))
+        self._batch_verified = False
+        self._batch_disabled = False
         self._clock = clock
         self._targets: dict[int, tuple[object, bool]] = {}  # pid -> (identity, busy), busiest first
         self._sizes: dict[int, tuple[object, int]] = {}  # pid -> (identity, graphics bytes)
@@ -276,9 +281,31 @@ class FootprintPoller:
                 return note[1]
         return "pending"
 
+    def _remember_measurement(self, pid, ident, size, reason, now):
+        with self._lock:
+            if self._targets.get(pid, (None,))[0] != ident:
+                return  # process exited or PID was reused while probing
+            self._reasons[pid] = (ident, reason)
+            if size is None:
+                self._fails[pid] = self._fails.get(pid, 0) + 1
+                if self._fails[pid] >= self.FAIL_LIMIT:
+                    self._retry[pid] = now + self.FAIL_RETRY
+                    self._sizes.pop(pid, None)
+            else:
+                self._sizes[pid] = (ident, size)
+                self._fails.pop(pid, None)
+                self._due[pid] = now + self.IDLE_EVERY
+
+    def _single(self, pid):
+        self._measure_reasons.pop(pid, None)
+        size = self.measure(pid)
+        reason = self._measure_reasons.get(pid, "measured" if size is not None else "footprint_unknown")
+        return (size, reason)
+
     def poll_once(self) -> None:
         with self._lock:
             targets = list(self._targets.items())
+        due = []
         for pid, (ident, busy) in targets:
             if self._stop:
                 return
@@ -288,22 +315,35 @@ class FootprintPoller:
                     continue
                 if not busy and pid in self._sizes and self._due.get(pid, 0) > now:
                     continue
-            self._measure_reasons.pop(pid, None)
-            size = self.measure(pid)
-            reason = self._measure_reasons.get(pid, "measured" if size is not None else "footprint_unknown")
-            with self._lock:
-                if self._targets.get(pid, (None,))[0] != ident:
-                    continue  # exited or reused while footprint ran: don't resurrect it
-                self._reasons[pid] = (ident, reason)
-                if size is None:
-                    self._fails[pid] = self._fails.get(pid, 0) + 1
-                    if self._fails[pid] >= self.FAIL_LIMIT:  # other user's process, or footprint keeps failing
-                        self._retry[pid] = now + self.FAIL_RETRY
-                        self._sizes.pop(pid, None)
-                else:
-                    self._sizes[pid] = (ident, size)
-                    self._fails.pop(pid, None)
-                    self._due[pid] = now + self.IDLE_EVERY
+            due.append((pid, ident, now))
+
+        for start in range(0, len(due), self.batch_size):
+            if self._stop:
+                return
+            part = due[start:start + self.batch_size]
+            readings = None
+            if len(part) >= 2 and not self._batch_disabled:
+                from .macos_footprint_batch import collect_graphics_batch
+                readings = collect_graphics_batch([p for p, _, _ in part], self._run, graphics_bytes)
+                if readings is not None and not self._batch_verified:
+                    # Compare up to four actual PIDs before trusting group
+                    # accounting. De-duplication in a multi-PID footprint must
+                    # never silently alter displayed per-process values.
+                    for pid, _, _ in part[:4]:
+                        if self._single(pid) != readings[pid]:
+                            self._batch_disabled = True
+                            readings = None
+                            break
+                    if readings is not None:
+                        self._batch_verified = True
+                elif readings is None:
+                    # Tool may not support multi-PID JSON on this macOS build.
+                    self._batch_disabled = True
+            if readings is None:
+                readings = {pid: self._single(pid) for pid, _, _ in part}
+            for pid, ident, started in part:
+                size, reason = readings[pid]
+                self._remember_measurement(pid, ident, size, reason, started)
 
     def wait_pass(self, timeout: float) -> bool:
         self._passed.clear()
@@ -339,7 +379,7 @@ class MacCounters:
         self._owners: dict[int, int | None] = {}
         self._names: dict[int, str] = {}
         self._unknown_identity: set[int] = set()
-        self.poller = poller or FootprintPoller()
+        self.poller = poller or FootprintPoller(batch_size=12 if os.uname().machine == "x86_64" else 1)
         self.poller.start()
         self.sample()  # baseline: GPU% is a rate, like the WDDM counters' first collection
 
