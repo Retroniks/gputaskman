@@ -9,6 +9,24 @@ struct GPUProcess: Identifiable {
     let gpu: Double?
     let graphicsFootprint: Double?
     let gpuClientObserved: Bool
+    let footprintStatus: String
+    var footprintStatusLabel: String {
+        switch footprintStatus {
+        case "measured": return "Gemessen"
+        case "last_measured": return "Letzter Wert"
+        case "other_user": return "Zugriff fehlt"
+        case "no_graphics_categories": return "Grafikzähler fehlen"
+        case "footprint_no_json": return "Keine Prozessdaten"
+        case "footprint_pid_missing": return "PID nicht im Report"
+        case "footprint_timeout": return "Messung zu langsam"
+        case "footprint_read_error": return "Messfehler"
+        case "owner_unavailable": return "Besitzer unbekannt"
+        case "not_targeted": return "Noch nicht geprüft"
+        case "pending": return "Messung ausstehend"
+        case "not_gpu_client": return "Kein GPU-Client"
+        default: return "Noch nicht verfügbar"
+        }
+    }
     let kind: String
     let gpuValueState: String
     let gpuAge: Double?
@@ -141,6 +159,7 @@ struct GPUProcess: Identifiable {
                               gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
                               graphicsFootprint: (row["graphics_footprint_bytes"] as? NSNumber)?.doubleValue,
                               gpuClientObserved: row["gpu_client_observed"] as? Bool ?? false,
+                              footprintStatus: row["graphics_footprint_status"] as? String ?? "pending",
                               kind: row["kind"] as? String ?? "",
                               gpuValueState: row["gpu_value_state"] as? String ?? "unavailable",
                               gpuAge: (row["gpu_value_age_s"] as? NSNumber)?.doubleValue)
@@ -215,7 +234,9 @@ struct GPUContentView: View {
         return rows
     }
     private func gib(_ n: Double?) -> String {
-        n.map { String(format: "%.2f GiB", $0 / 1073741824) } ?? "—"
+        guard let number = n, number >= 0 else { return "—" }
+        if number < 107374182.4 { return String(format: "%.1f MiB", number / 1048576) }
+        return String(format: "%.2f GiB", number / 1073741824)
     }
     private func pct(_ n: Double?) -> String {
         n.map { String(format: "%.1f %%", $0) } ?? "—"
@@ -330,14 +351,11 @@ struct GPUContentView: View {
                     Text(gib(p.graphicsFootprint)).monospacedDigit()
                         .foregroundStyle(p.gpuValueState == "last" ? .secondary : .primary)
                 }.width(125)
-                TableColumn("GPU-Daten") { p in
-                    Text(p.gpuValueState == "current" ? "Aktuell" :
-                         p.gpuValueState == "last" ? "Letzter Wert" : "Nicht verfügbar")
-                        .foregroundStyle(p.gpuValueState == "current" ? .primary : .secondary)
-                        .help(p.gpuValueState == "last" ?
-                              "Letzter tatsächlich gemessener GPU-Wert vor \(Int(p.gpuAge ?? 0)) Sekunden" :
-                              "Nicht alle GPU-Speicherbelegungen können einzelnen Apps zugeordnet werden")
-                }.width(120)
+                TableColumn("Speicherstatus") { p in
+                    Text(p.footprintStatusLabel)
+                        .foregroundStyle(p.footprintStatus == "measured" ? .primary : .secondary)
+                        .help("Footprint-Quelle: " + p.footprintStatus + ". Kein dedizierter Radeon-VRAM-Zähler.")
+                }.width(150)
                 TableColumn("Typ") { p in Text(p.kind).lineLimit(1) }.width(95)
             }
             if let pid = selectedPIDs.first,

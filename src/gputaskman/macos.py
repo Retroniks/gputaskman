@@ -202,6 +202,8 @@ class FootprintPoller:
         self._clock = clock
         self._targets: dict[int, tuple[object, bool]] = {}  # pid -> (identity, busy), busiest first
         self._sizes: dict[int, tuple[object, int]] = {}  # pid -> (identity, graphics bytes)
+        self._reasons: dict[int, tuple[object, str]] = {}  # pid/identity -> last attempted result
+        self._measure_reasons: dict[int, str] = {}  # written by the poller worker
         self._due: dict[int, float] = {}
         self._fails: dict[int, int] = {}
         self._retry: dict[int, float] = {}
@@ -220,13 +222,13 @@ class FootprintPoller:
         """[(pid, identity, busy)], busiest first. Anything else, or a PID whose identity changed, is forgotten."""
         with self._lock:
             self._targets = {pid: (ident, busy) for pid, ident, busy in targets}
-            for store in (self._sizes, self._due, self._fails, self._retry):
+            for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons):
                 for pid in list(store):
                     if pid not in self._targets:
                         del store[pid]
             for pid, (ident, _) in self._targets.items():
                 if pid in self._sizes and self._sizes[pid][0] != ident:  # reused PID
-                    for store in (self._sizes, self._due, self._fails, self._retry):
+                    for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons):
                         store.pop(pid, None)
         self._wake.set()
 
@@ -236,19 +238,43 @@ class FootprintPoller:
         return hit[1] if hit and hit[0] == identity else None
 
     def measure(self, pid: int) -> int | None:
+        """Return graphics HOST RAM; record the cause when footprint is unavailable."""
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "fp.json")
             try:
-                self._run(["footprint", "-f", "bytes", "-j", path, "-p", str(pid)],
-                          capture_output=True, timeout=10)
+                result = self._run(["footprint", "-f", "bytes", "-j", path, "-p", str(pid)],
+                                   capture_output=True, timeout=10)
+                if not os.path.isfile(path):
+                    self._measure_reasons[pid] = "footprint_no_json"
+                    return None
                 with open(path, encoding="utf-8") as f:
                     data = json.load(f)
+            except subprocess.TimeoutExpired:
+                self._measure_reasons[pid] = "footprint_timeout"
+                return None
             except (OSError, subprocess.SubprocessError, ValueError):
+                self._measure_reasons[pid] = "footprint_read_error"
                 return None
         for p in data.get("processes") or []:
-            if p.get("pid") == pid:
-                return graphics_bytes(p)
+            if str(p.get("pid")) == str(pid):
+                amount = graphics_bytes(p)
+                self._measure_reasons[pid] = "measured" if amount is not None else "no_graphics_categories"
+                return amount
+        self._measure_reasons[pid] = "footprint_pid_missing"
         return None
+
+    def status(self, pid: int, identity: object) -> str:
+        """Bound status to PID AND start-time; stale process results are not reused."""
+        with self._lock:
+            size = self._sizes.get(pid)
+            if size is not None and size[0] == identity:
+                return "measured"
+            if self._targets.get(pid, (None,))[0] != identity:
+                return "not_targeted"
+            note = self._reasons.get(pid)
+            if note is not None and note[0] == identity:
+                return note[1]
+        return "pending"
 
     def poll_once(self) -> None:
         with self._lock:
@@ -262,10 +288,13 @@ class FootprintPoller:
                     continue
                 if not busy and pid in self._sizes and self._due.get(pid, 0) > now:
                     continue
+            self._measure_reasons.pop(pid, None)
             size = self.measure(pid)
+            reason = self._measure_reasons.get(pid, "measured" if size is not None else "footprint_unknown")
             with self._lock:
                 if self._targets.get(pid, (None,))[0] != ident:
                     continue  # exited or reused while footprint ran: don't resurrect it
+                self._reasons[pid] = (ident, reason)
                 if size is None:
                     self._fails[pid] = self._fails.get(pid, 0) + 1
                     if self._fails[pid] >= self.FAIL_LIMIT:  # other user's process, or footprint keeps failing

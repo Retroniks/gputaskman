@@ -71,7 +71,22 @@ def run() -> None:
             # discrete Radeon VRAM remains unmeasured, not zero.
             for process in raw['processes']:
                 process['graphics_footprint_bytes'] = process.get('vram_bytes')
-                process['dedicated_vram_bytes'] = None
+                process['dedicated_vram_bytes'] = None  # not exposed as proven RX580 bytes per PID
+                pid = process['pid']
+                if process['graphics_footprint_bytes'] is not None:
+                    reason = 'measured' if process.get('gpu_client_observed') else 'last_measured'
+                elif not process.get('gpu_client_observed'):
+                    reason = 'not_gpu_client'
+                else:
+                    owner = with_collector.counters._owners.get(pid)
+                    if owner is None:
+                        reason = 'owner_unavailable'
+                    elif owner != os.getuid() and os.geteuid() != 0:
+                        reason = 'other_user'
+                    else:
+                        poller = getattr(with_collector.counters, 'poller', None)
+                        reason = poller.status(pid, process['started_at']) if poller and hasattr(poller, 'status') else 'pending'
+                process['graphics_footprint_status'] = reason
             raw['os_process_count'] = len(living)
             raw['gpu_client_count'] = len(observed)
             raw['gpu_current_count'] = sum(r['gpu_value_state'] == 'current' for r in raw['processes'])
