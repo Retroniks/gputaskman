@@ -41,5 +41,10 @@ class ProcessInventory:
                 # Refresh just the measured fields. All other fields retain last *measured* values.
                 result[field] = current.get(field, last.get(field))
             result['gpu_value_state'] = ('current' if current else 'last' if last else 'unavailable')
+            # Original gputaskman inspection belongs to the actually observed GPU
+            # process. Do not fabricate details or carry them to unrelated PIDs.
+            for field in ('runtimes', 'inside', 'model_files', 'llm',
+                          'shared_bytes', 'paged_out_bytes', 'committed_bytes'):
+                result[field] = raw.get(field) if raw is not None else None
             output.append(result)
         return output

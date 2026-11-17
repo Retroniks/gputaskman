@@ -10,6 +10,15 @@ struct GPUProcess: Identifiable {
     let graphicsFootprint: Double?
     let gpuClientObserved: Bool
     let footprintStatus: String
+    let runtime: String
+    let inside: String
+    let modelFiles: [String]
+    let llmModels: [String]
+    let engineSummary: String
+    let dedicatedVRAM: Double?
+    let spill: Double?
+    let paged: Double?
+    let committed: Double?
     var footprintStatusLabel: String {
         switch footprintStatus {
         case "measured": return "Gemessen"
@@ -56,6 +65,9 @@ struct GPUProcess: Identifiable {
     @Published var vramHistory: [Double?] = []
     @Published var topConsumers: [GPUProcess] = []
     @Published var currentGPUClients = 0
+    @Published var deviceTemperature: Double?
+    @Published var devicePower: Double?
+    @Published var deviceClock: Double?
     @Published var measuredGraphicsClients = 0
     @Published var nonzeroGraphicsClients = 0
     private var worker: Process?
@@ -136,6 +148,9 @@ struct GPUProcess: Identifiable {
         vramAge = (root["vram_value_age_s"] as? NSNumber)?.doubleValue
         let dev = root["device"] as? [String: Any] ?? [:]
         gpuLoad = (dev["util_gpu"] as? NSNumber)?.doubleValue
+        deviceTemperature = (dev["temp"] as? NSNumber)?.doubleValue
+        devicePower = (dev["power_w"] as? NSNumber)?.doubleValue
+        deviceClock = (dev["gfx_clock"] as? NSNumber)?.doubleValue
         gpuHistory.append(gpuLoad)
         if gpuHistory.count > 90 { gpuHistory.removeFirst(gpuHistory.count - 90) }
         vramHistory.append(vramState == "current" ? used.map { $0 / 1073741824 } : nil)
@@ -154,12 +169,32 @@ struct GPUProcess: Identifiable {
         }
         items = rawRows.compactMap { row -> GPUProcess? in
             guard let pid = row["pid"] as? Int else { return nil }
+            let engines = row["engines"] as? [String: NSNumber] ?? [:]
+            let enginesText = engines.keys.sorted().compactMap { key -> String? in
+                guard let number = engines[key] else { return nil }
+                return key + ": " + String(format: "%.1f %%", number.doubleValue)
+            }.joined(separator: " · ")
+            let runtimeNames = row["runtimes"] as? [String] ?? []
+            let modelFiles = (row["model_files"] as? [[String: Any]] ?? [])
+                .compactMap { $0["path"] as? String }
+            let llm = row["llm"] as? [String: Any] ?? [:]
+            let llmNames = (llm["models"] as? [[String: Any]] ?? [])
+                .compactMap { ($0["name"] as? String) ?? ($0["label"] as? String) }
             return GPUProcess(id: pid, name: row["name"] as? String ?? "PID \(pid)",
                               cpu: (row["cpu_pct"] as? NSNumber)?.doubleValue,
                               gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
                               graphicsFootprint: (row["graphics_footprint_bytes"] as? NSNumber)?.doubleValue,
                               gpuClientObserved: row["gpu_client_observed"] as? Bool ?? false,
                               footprintStatus: row["graphics_footprint_status"] as? String ?? "pending",
+                              runtime: runtimeNames.joined(separator: " + "),
+                              inside: row["inside"] as? String ?? "",
+                              modelFiles: modelFiles,
+                              llmModels: llmNames,
+                              engineSummary: enginesText,
+                              dedicatedVRAM: (row["dedicated_vram_bytes"] as? NSNumber)?.doubleValue,
+                              spill: (row["shared_bytes"] as? NSNumber)?.doubleValue,
+                              paged: (row["paged_out_bytes"] as? NSNumber)?.doubleValue,
+                              committed: (row["committed_bytes"] as? NSNumber)?.doubleValue,
                               kind: row["kind"] as? String ?? "",
                               gpuValueState: row["gpu_value_state"] as? String ?? "unavailable",
                               gpuAge: (row["gpu_value_age_s"] as? NSNumber)?.doubleValue)
@@ -286,44 +321,22 @@ struct GPUContentView: View {
                     Text("\(model.observedCount)").font(.title2.monospacedDigit())
                 }
             }.padding(12).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack {
-                        Text("Live-Verlauf").font(.headline)
-                        Spacer()
-                        Text("Letzte 90 Messungen").font(.caption).foregroundStyle(.secondary)
-                    }
-                    HStack(spacing: 18) {
-                        GPUHistoryPanel(title: "GPU", values: model.gpuHistory, limit: 100, suffix: " %")
-                        GPUHistoryPanel(title: "VRAM", values: model.vramHistory,
-                                        limit: max((model.total ?? 1) / 1073741824, 1), suffix: " GiB")
-                    }
-                    Text("VRAM-Verlauf: echte aktuelle Messungen · Unterbrechungen bleiben sichtbar")
-                        .font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Text("GPU-PROZESSE · \(model.currentGPUClients) GPU-Clients")
+                    .font(.headline)
+                Spacer()
+                if let temperature = model.deviceTemperature {
+                    Text(String(format: "GPU %.0f °C", temperature))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(.quaternary.opacity(0.17), in: RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Grafik-Speicher je PID").font(.headline)
-                    Text("\(model.measuredGraphicsClients)/\(model.currentGPUClients) GPU-Clients mit Messwert")
-                        .font(.caption).foregroundStyle(.secondary)
-                    ForEach(model.topConsumers) { p in
-                        HStack(spacing: 8) {
-                            Text(p.name).lineLimit(1)
-                            Spacer()
-                            Text(gib(p.graphicsFootprint)).monospacedDigit()
-                        }.font(.caption)
-                    }
-                    if model.topConsumers.isEmpty {
-                        Text("Noch kein Grafik-Footprint gemessen")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                if let power = model.devicePower {
+                    Text(String(format: "%.0f W", power))
                 }
-                .frame(width: 290, alignment: .leading)
-                .padding(10)
-                .background(.quaternary.opacity(0.17), in: RoundedRectangle(cornerRadius: 8))
-            }
+                if let clock = model.deviceClock {
+                    Text(String(format: "%.0f MHz", clock))
+                }
+                Text("VRAM je PID nur mit belegtem Treiberzähler")
+                    .foregroundStyle(.secondary)
+            }.font(.caption)
             HStack(spacing: 12) {
                 Picker("Anzeigen", selection: $visibility) {
                     Text("Alle laufenden").tag(0)
@@ -343,46 +356,67 @@ struct GPUContentView: View {
                             .resizable().frame(width: 16, height: 16)
                         Text(p.name).lineLimit(1)
                     }
-                }.width(min: 180, ideal: 260)
-                TableColumn("PID", value: \GPUProcess.pidKey) { p in Text(String(p.id)).monospacedDigit() }.width(65)
-                TableColumn("CPU", value: \GPUProcess.cpuKey) { p in Text(pct(p.cpu)).monospacedDigit() }.width(80)
-                TableColumn("GPU", value: \GPUProcess.gpuKey) { p in Text(pct(p.gpu)).monospacedDigit() }.width(80)
+                }.width(min: 170, ideal: 215)
+                TableColumn("PID", value: \GPUProcess.pidKey) { p in
+                    Text(String(p.id)).monospacedDigit()
+                }.width(65)
+                TableColumn("Typ") { p in Text(p.kind).lineLimit(1) }.width(90)
+                TableColumn("Runtime", value: \GPUProcess.runtime) { p in
+                    Text(p.runtime.isEmpty ? "—" : p.runtime).lineLimit(1)
+                }.width(min: 85, ideal: 125)
+                TableColumn("VRAM/PID") { p in
+                    Text(gib(p.dedicatedVRAM)).monospacedDigit()
+                        .help("Nur dedizierter, tatsächlich zugerechneter VRAM. Auf Intel Radeon derzeit nicht verfügbar.")
+                }.width(95)
+                TableColumn("GPU", value: \GPUProcess.gpuKey) { p in
+                    Text(pct(p.gpu)).monospacedDigit()
+                }.width(70)
                 TableColumn("Grafik-Footprint", value: \GPUProcess.graphicsFootprintKey) { p in
                     Text(gib(p.graphicsFootprint)).monospacedDigit()
-                        .foregroundStyle(p.gpuValueState == "last" ? .secondary : .primary)
-                }.width(125)
-                TableColumn("Speicherstatus") { p in
-                    Text(p.footprintStatusLabel)
-                        .foregroundStyle(p.footprintStatus == "measured" ? .primary : .secondary)
-                        .help("Footprint-Quelle: " + p.footprintStatus + ". Kein dedizierter Radeon-VRAM-Zähler.")
-                }.width(150)
-                TableColumn("Typ") { p in Text(p.kind).lineLimit(1) }.width(95)
+                        .help(p.footprintStatusLabel + "; Grafik-Hostspeicher, nicht dedizierter VRAM")
+                }.width(126)
+                TableColumn("Inside", value: \GPUProcess.inside) { p in
+                    Text(p.inside.isEmpty ? "—" : p.inside).lineLimit(1)
+                }.width(min: 130, ideal: 210)
             }
             if let pid = selectedPIDs.first,
                let process = model.items.first(where: { $0.id == pid }) {
-                HStack(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
                         Text(process.name).font(.headline).lineLimit(1)
                         Text("PID \(process.id) · \(process.kind)").foregroundStyle(.secondary)
-                            .font(.caption)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("CPU: " + pct(process.cpu))
-                        Text("GPU: " + pct(process.gpu))
-                    }.monospacedDigit()
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Grafik-Footprint: " + gib(process.graphicsFootprint))
-                        Text(process.gpuValueState == "current" ? "GPU-Werte: aktuell" :
-                             process.gpuValueState == "last" ?
-                             "GPU-Werte: vor \(Int(process.gpuAge ?? 0)) s gemessen" :
-                             "GPU-Werte: nicht verfügbar").foregroundStyle(.secondary)
-                            .font(.caption)
-                    }.frame(maxWidth: 270, alignment: .leading)
-                    Button("PID kopieren") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(String(process.id), forType: .string)
+                        Spacer()
+                        Text("GPU " + pct(process.gpu)).monospacedDigit()
+                        Text("VRAM " + gib(process.dedicatedVRAM)).monospacedDigit()
+                        Text("Grafik-RAM " + gib(process.graphicsFootprint)).monospacedDigit()
+                        Button("PID kopieren") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(String(process.id), forType: .string)
+                        }
                     }
-                }.padding(12)
+                    Text("Runtime: " + (process.runtime.isEmpty ? "Nicht ermittelt" : process.runtime))
+                        .font(.caption)
+                    Text("Inside: " + (process.inside.isEmpty ? "Nicht ermittelt" : process.inside))
+                        .font(.caption).lineLimit(2)
+                    if !process.llmModels.isEmpty {
+                        Text("Erkannte Modelle: " + process.llmModels.prefix(3).joined(separator: ", "))
+                            .font(.caption).lineLimit(2)
+                    } else if !process.modelFiles.isEmpty {
+                        Text("Modell-Dateien: " + process.modelFiles.prefix(3).map {
+                            URL(fileURLWithPath: $0).lastPathComponent
+                        }.joined(separator: ", "))
+                            .font(.caption).lineLimit(2)
+                    }
+                    HStack(spacing: 18) {
+                        Text("GPU-Engines: " + (process.engineSummary.isEmpty ? "Keine separaten Zähler" : process.engineSummary))
+                        Text("Spill: " + gib(process.spill))
+                        Text("Paged: " + gib(process.paged))
+                        Text("Commit: " + gib(process.committed))
+                        Text("Speicherstatus: " + process.footprintStatusLabel)
+                    }.font(.caption).foregroundStyle(.secondary)
+                    Text("Modell-/Runtime-Erkennung belegt keine VRAM-Residency. Unverfügbare Zähler bleiben —.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }.padding(10)
                  .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
@@ -394,7 +428,7 @@ struct GPUContentView: View {
             }.font(.caption)
         }
         .padding(18)
-        .frame(minWidth: 1040, minHeight: 560)
+        .frame(minWidth: 1120, minHeight: 570)
         .onAppear {
             model.start()
             NSApp.activate(ignoringOtherApps: true)

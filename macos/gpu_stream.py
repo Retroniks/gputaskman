@@ -57,7 +57,9 @@ def run() -> None:
             if pid not in active:
                 del cpu_pids[pid]
         return living
-    with_collector = Collector(scan_budget=0.0)
+    # Keep the upstream collector's bounded process/runtime/model inspection enabled.
+    # 0.0 previously disabled every deep scan in the native UI.
+    with_collector = Collector()
     try:
         while True:
             started = time.monotonic()
