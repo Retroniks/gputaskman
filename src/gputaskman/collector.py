@@ -219,6 +219,7 @@ class Collector:
         self.inspector = ProcInspector()
         self.prober = ServerProber()
         self.scan_budget = scan_budget  # None = scan every candidate now (one-shot output)
+        self._mac_scan_cursor = 0
         self.gpu_index = gpu_index
         # WSL: Linux can't see WSL's own VRAM, but the Windows host can. Ask it when interop is enabled.
         self.host: HostStream | None = None
@@ -312,8 +313,18 @@ class Collector:
         if self.host is not None:  # current inferred sizes drive both scan priority and the LLM breakdown
             self._add_host_rows(snap)
         local_rows = [r for r in snap.procs if not r.host]
-        deep_pids = {r.pid for r in local_rows[: self.DEEP_TOP_N]} | {
-            r.pid for r in local_rows if r.gpu.gpu_pct >= 2}
+        if BACKEND == "metal" and self.adapter and self.adapter.vendor_id == VENDOR_AMD:
+            from .macos_scan_priority import prioritize_radeon_processes
+            owners = getattr(self.counters, "_owners", {})
+            owner_uid = getattr(self.counters, "_uid", os.getuid())
+            local_rows = prioritize_radeon_processes(
+                local_rows, owners, owner_uid, self._mac_scan_cursor)
+            self._mac_scan_cursor += 1
+            # Every observed client is eligible as cycles rotate; no fake VRAM.
+            deep_pids = {r.pid for r in local_rows}
+        else:
+            deep_pids = {r.pid for r in local_rows[: self.DEEP_TOP_N]} | {
+                r.pid for r in local_rows if r.gpu.gpu_pct >= 2}
         deadline = None if self.scan_budget is None else time.perf_counter() + self.scan_budget
         ollama_runners = []
         for row in local_rows:  # largest VRAM first, so the budget goes to what matters

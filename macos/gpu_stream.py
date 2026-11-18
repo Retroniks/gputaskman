@@ -59,7 +59,8 @@ def run() -> None:
         return living
     # Keep the upstream collector's bounded process/runtime/model inspection enabled.
     # 0.0 previously disabled every deep scan in the native UI.
-    with_collector = Collector()
+    # Radeon GPU app: bounded source inspection across accessible GPU clients.
+    with_collector = Collector(scan_budget=0.35)
     try:
         while True:
             started = time.monotonic()

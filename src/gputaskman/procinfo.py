@@ -29,7 +29,7 @@ RUNTIMES: list[tuple[str, tuple[str, ...]]] = [
     ("cuDNN", ("cudnn*.dll", "libcudnn*.so")),
     ("CUDA", ("nvcuda.dll", "nvcuda64.dll", "cudart64_*.dll", "cublas64_*.dll",
               "libcuda.so", "libcudart.so", "libcublas.so")),
-    ("Metal", ("agxmetal*",)),  # the Apple GPU's Metal driver bundle, mapped by every Metal process
+    ("Metal", ("agxmetal*", "metal.framework", "amdradeon*mtldriver*")),  # Apple and Intel Radeon Metal
     ("Vulkan", ("vulkan-1.dll", "libvulkan.so", "libmoltenvk.dylib")),
     ("D3D12", ("d3d12core.dll", "libd3d12core.so")),
     ("OpenGL", ("opengl32.dll", "libgl.so", "libglx*.so", "libegl*.so")),
@@ -146,6 +146,20 @@ def _lib_name(base: str) -> str | None:
 
 def _match_runtimes(dll_names: set[str]) -> list[str]:
     return [tag for tag, rx in _RUNTIME_RX if any(rx.match(d) for d in dll_names)]
+
+
+def macos_mapped_runtime(path: str) -> str | None:
+    """Evidence from a mapped macOS runtime, not from PID/process-name guesses.
+
+    Returned tokens enter the ORIGINAL library pattern classifier.
+    """
+    p = path.lower().replace("\\", "/")
+    base = p.rsplit("/", 1)[-1]
+    if "/metal.framework/" in p and base == "metal":
+        return "metal.framework"
+    if "/amdradeon" in p and "mtldriver" in p and "gl" not in base:
+        return base if base.startswith("amdradeon") and "mtldriver" in base else "amdradeon-mtldriver"
+    return None
 
 
 def file_key(path: str) -> tuple[int, int] | str:
@@ -386,6 +400,12 @@ class ProcInspector:
             path = m.path
             base = os.path.basename(path).lower()
             lib = _lib_name(base)
+            # Intel Radeon Metal drivers and Apple Metal.framework are
+            # mapped under /System and must be detected BEFORE _skip_path.
+            # A mere GPU client, without a mapped runtime, is not proof.
+            mac_runtime = macos_mapped_runtime(path) if sys.platform == "darwin" else None
+            if mac_runtime:
+                dlls.add(mac_runtime)
             if lib and base.startswith("agxmetal"):
                 dlls.add(lib)  # the Metal driver lives under /System: record it before skipping system paths
                 continue
