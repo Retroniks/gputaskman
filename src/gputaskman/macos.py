@@ -410,9 +410,9 @@ class MacCounters:
         fixture_is_apple_silicon = bool(dev is not None and re.match(r'^Apple M[0-9]+(?:$|[^0-9])', dev.model))
         amd_adapter = (intel_amd_adapter() if os.uname().machine == 'x86_64'
                        and not fixture_is_apple_silicon else None)
-        from .macos_intel_amd_vram import vram_used_from_entries
+        from .macos_intel_amd_vram import vram_measurement
         amd_total = amd_adapter.dedicated_vram if amd_adapter is not None else 0
-        amd_used = vram_used_from_entries(accel, amd_total) if amd_total else None
+        amd_used, amd_source = vram_measurement(accel, amd_total)
         # The shallow accelerator sample can omit Radeon vramFreeBytes.
         # Read the complete Intel IOAccelerator tree only on a missing sample.
         # A separate source must be unambiguous; unknown remains unknown.
@@ -420,20 +420,23 @@ class MacCounters:
             from .macos_intel_amd import query_clients
             full_tree = query_clients()
             if full_tree is not None:
-                amd_used = vram_used_from_entries(full_tree, amd_total)
-        if dev is None:
-            self.device = None  # no reading this time: never keep showing the last one as current
+                amd_used, amd_source = vram_measurement(full_tree, amd_total)
+        self.vram_source = amd_source if amd_adapter is not None else None
+        if amd_adapter is not None and amd_used is not None:
+            adapters[ADAPTER_KEY].dedicated = float(amd_used)
+        elif amd_adapter is None and dev is not None and dev.allocated is not None:
+            adapters[ADAPTER_KEY].dedicated = float(dev.allocated)
+        # The AMD VRAM counter is independent of the GPU utilization dictionary.
+        # A missing shallow utilization sample must not discard valid VRAM usage.
+        if dev is None and amd_adapter is None:
+            self.device = None
         else:
-            if amd_used is not None:
-                adapters[ADAPTER_KEY].dedicated = float(amd_used)
-            elif amd_adapter is None and dev.allocated is not None:
-                adapters[ADAPTER_KEY].dedicated = float(dev.allocated)
-            # Use the same adapter decision for both memory source and device label.
             amd = amd_adapter
             self.device = NvDevice(index=0, name=amd.name if amd else dev.model, driver_model="Metal",
                                    mem_total=amd.dedicated_vram if amd else physical_memory(),
-                                   mem_used=amd_used if amd_adapter is not None else dev.allocated,
-                                   util_gpu=dev.utilization, source="IOKit")
+                                   mem_used=amd_used if amd is not None else dev.allocated,
+                                   util_gpu=dev.utilization if dev is not None else None,
+                                   source="IOKit")
         if clients is None:
             # A failed client query is not an empty client list: preserve the last valid rate baseline and
             # footprint targets so the next successful sample spans the full elapsed interval.
