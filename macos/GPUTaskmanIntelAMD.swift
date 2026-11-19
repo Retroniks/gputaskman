@@ -70,6 +70,8 @@ struct GPUProcess: Identifiable {
     @Published var deviceClock: Double?
     @Published var measuredGraphicsClients = 0
     @Published var nonzeroGraphicsClients = 0
+    @Published var memoryMapPID: Int?
+    @Published var memoryMapText = ""
     private var worker: Process?
     private var reader: DispatchWorkItem?
     private var watchdog: Timer?
@@ -210,6 +212,39 @@ struct GPUProcess: Identifiable {
         count += 1
         updated = Date()
         status = "\(observedCount) laufende Prozesse · \(lastValueCount) letzte GPU-Messwerte · Probe \(count)"
+    }
+    func loadMemoryMap(pid: Int) {
+        memoryMapPID = pid
+        memoryMapText = "Lese echte footprint- und vmmap-Kategorien für PID \(pid) …"
+        let executable = source + "/.venv/bin/python"
+        let helper = source + "/macos/gpu_memory_map_040.py"
+        let workingDirectory = source
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = [helper, "--pid", String(pid)]
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            var result = "Memory-Map nicht verfügbar"
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                result = String(data: data, encoding: .utf8) ?? "Ausgabe nicht lesbar"
+                if process.terminationStatus != 0 {
+                    result += "\nStatus: Messung fehlgeschlagen, Exit \(process.terminationStatus)"
+                }
+            } catch {
+                result = "Memory-Map konnte nicht gestartet werden: \(error.localizedDescription)"
+            }
+            let outcome = result
+            Task { @MainActor [weak self] in
+                guard let self = self, self.memoryMapPID == pid else { return }
+                self.memoryMapText = outcome
+            }
+        }
     }
     deinit { worker?.terminate() }
 }
@@ -393,6 +428,7 @@ struct GPUContentView: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(String(process.id), forType: .string)
                         }
+                        Button("Memory-Map") { model.loadMemoryMap(pid: pid) }
                     }
                     Text("Runtime: " + (process.runtime.isEmpty ? "Nicht ermittelt" : process.runtime))
                         .font(.caption)
@@ -416,6 +452,16 @@ struct GPUContentView: View {
                     }.font(.caption).foregroundStyle(.secondary)
                     Text("Modell-/Runtime-Erkennung belegt keine VRAM-Residency. Unverfügbare Zähler bleiben —.")
                         .font(.caption2).foregroundStyle(.secondary)
+                    if model.memoryMapPID == pid {
+                        ScrollView([.vertical, .horizontal]) {
+                            Text(model.memoryMapText)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(height: 220)
+                        .background(.quaternary.opacity(0.12))
+                    }
                 }.padding(10)
                  .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
             }
@@ -428,7 +474,7 @@ struct GPUContentView: View {
             }.font(.caption)
         }
         .padding(18)
-        .frame(minWidth: 1120, minHeight: 570)
+        .frame(minWidth: 1120, minHeight: 650)
         .onAppear {
             model.start()
             NSApp.activate(ignoringOtherApps: true)

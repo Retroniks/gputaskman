@@ -135,8 +135,14 @@ def graphics_bytes(process: dict) -> int | None:
         return values
 
     explicit = dirty_values(lambda name: name.endswith("(graphics)"))
+    # IOSurface is a separately billed category even when IOAccelerator
+    # (graphics) is present. Apple footprint lists these as distinct rows.
+    # Do not add an untagged IOAccelerator copy when explicit IOAccelerator
+    # (graphics) exists: that source's overlap has not been established.
+    independent_surface = dirty_values(lambda name: (
+        "iosurface" in name.lower() and "(graphics)" not in name.lower()))
     if explicit:
-        return sum(explicit)
+        return sum(explicit) + sum(independent_surface)
     standalone = dirty_values(lambda name: (
         ("ioaccelerator" in name.lower() or "iosurface" in name.lower())
         and "(graphics)" not in name.lower()))

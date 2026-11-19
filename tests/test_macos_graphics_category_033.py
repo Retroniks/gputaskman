@@ -10,7 +10,7 @@ class GraphicsCategoryTests(unittest.TestCase):
             'IOAccelerator': {'dirty': 1200},
             'IOSurface': {'dirty': 600},
             'MALLOC': {'dirty': 30_000}}}
-        self.assertEqual(graphics_bytes(row), 4600)
+        self.assertEqual(graphics_bytes(row), 5200)
 
     def test_intel_standalone_categories(self):
         row={'categories': {'VM: IOAccelerator': {'dirty': 4000},
