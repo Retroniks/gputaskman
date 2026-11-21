@@ -8,6 +8,11 @@ struct GPUProcess: Identifiable {
     let cpu: Double?
     let gpu: Double?
     let graphicsFootprint: Double?
+    let graphicsMap: Double?
+    let iosurface: Double?
+    let ioaccelerator: Double?
+    let graphicsMapAge: Double?
+    let graphicsMapStatus: String
     let gpuClientObserved: Bool
     let footprintStatus: String
     let runtime: String
@@ -44,6 +49,9 @@ struct GPUProcess: Identifiable {
     var cpuKey: String { String(format: "%020.6f", cpu ?? -1) }
     var gpuKey: String { String(format: "%020.6f", gpu ?? -1) }
     var graphicsFootprintKey: String { String(format: "%020.0f", graphicsFootprint ?? -1) }
+    var graphicsMapKey: String { String(format: "%020.0f", graphicsMap ?? -1) }
+    var iosurfaceKey: String { String(format: "%020.0f", iosurface ?? -1) }
+    var ioacceleratorKey: String { String(format: "%020.0f", ioaccelerator ?? -1) }
 
 }
 @MainActor final class GPUViewModel: ObservableObject {
@@ -186,6 +194,11 @@ struct GPUProcess: Identifiable {
                               cpu: (row["cpu_pct"] as? NSNumber)?.doubleValue,
                               gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
                               graphicsFootprint: (row["graphics_footprint_bytes"] as? NSNumber)?.doubleValue,
+                              graphicsMap: (row["graphics_map_bytes"] as? NSNumber)?.doubleValue,
+                              iosurface: (row["iosurface_bytes"] as? NSNumber)?.doubleValue,
+                              ioaccelerator: (row["ioaccelerator_bytes"] as? NSNumber)?.doubleValue,
+                              graphicsMapAge: (row["graphics_map_age_s"] as? NSNumber)?.doubleValue,
+                              graphicsMapStatus: row["graphics_map_status"] as? String ?? "pending",
                               gpuClientObserved: row["gpu_client_observed"] as? Bool ?? false,
                               footprintStatus: row["graphics_footprint_status"] as? String ?? "pending",
                               runtime: runtimeNames.joined(separator: " + "),
@@ -399,17 +412,21 @@ struct GPUContentView: View {
                 TableColumn("Runtime", value: \GPUProcess.runtime) { p in
                     Text(p.runtime.isEmpty ? "—" : p.runtime).lineLimit(1)
                 }.width(min: 85, ideal: 125)
-                TableColumn("VRAM/PID") { p in
-                    Text(gib(p.dedicatedVRAM)).monospacedDigit()
-                        .help("Nur dedizierter, tatsächlich zugerechneter VRAM. Auf Intel Radeon derzeit nicht verfügbar.")
-                }.width(95)
+                TableColumn("IOSurface", value: \GPUProcess.iosurfaceKey) { p in
+                    Text(gib(p.iosurface)).monospacedDigit()
+                        .help("macOS-Hostspeicher: IOSurface dirty. Kein dedizierter RX-580-VRAM.")
+                }.width(105)
+                TableColumn("IOAccelerator", value: \GPUProcess.ioacceleratorKey) { p in
+                    Text(gib(p.ioaccelerator)).monospacedDigit()
+                        .help("macOS-Hostspeicher: IOAccelerator dirty. Kein dedizierter RX-580-VRAM.")
+                }.width(116)
                 TableColumn("GPU", value: \GPUProcess.gpuKey) { p in
                     Text(pct(p.gpu)).monospacedDigit()
                 }.width(70)
-                TableColumn("Grafik-Footprint", value: \GPUProcess.graphicsFootprintKey) { p in
-                    Text(gib(p.graphicsFootprint)).monospacedDigit()
-                        .help(p.footprintStatusLabel + "; Grafik-Hostspeicher, nicht dedizierter VRAM")
-                }.width(126)
+                TableColumn("Grafik-dirty", value: \GPUProcess.graphicsMapKey) { p in
+                    Text(gib(p.graphicsMap)).monospacedDigit()
+                        .help("Summe der ausgewiesenen Grafik-Kategorien aus footprint; keine Radeon-VRAM-Zuordnung. Status: " + p.graphicsMapStatus)
+                }.width(110)
                 TableColumn("Inside", value: \GPUProcess.inside) { p in
                     Text(p.inside.isEmpty ? "—" : p.inside).lineLimit(1)
                 }.width(min: 130, ideal: 210)
@@ -430,6 +447,17 @@ struct GPUContentView: View {
                         }
                         Button("Memory-Map") { model.loadMemoryMap(pid: pid) }
                     }
+                    HStack(spacing: 15) {
+                        Text("IOSurface dirty: " + gib(process.iosurface))
+                        Text("IOAccelerator dirty: " + gib(process.ioaccelerator))
+                        Text("Grafik-dirty: " + gib(process.graphicsMap))
+                        Text("Memory-Map: " + (process.graphicsMapStatus == "pending" ? "ausstehend" : process.graphicsMapStatus))
+                        if let age = process.graphicsMapAge {
+                            Text(String(format: "vor %.0f s", age))
+                        }
+                    }.font(.caption).monospacedDigit()
+                    Text("Grafik-Kategorien: macOS-Hostspeicher; keine dedizierte RX-580-VRAM-Zuordnung")
+                        .font(.caption2).foregroundStyle(.secondary)
                     Text("Runtime: " + (process.runtime.isEmpty ? "Nicht ermittelt" : process.runtime))
                         .font(.caption)
                     Text("Inside: " + (process.inside.isEmpty ? "Nicht ermittelt" : process.inside))
@@ -474,7 +502,7 @@ struct GPUContentView: View {
             }.font(.caption)
         }
         .padding(18)
-        .frame(minWidth: 1120, minHeight: 650)
+        .frame(minWidth: 1260, minHeight: 650)
         .onAppear {
             model.start()
             NSApp.activate(ignoringOtherApps: true)
