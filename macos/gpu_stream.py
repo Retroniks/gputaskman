@@ -24,12 +24,10 @@ def run() -> None:
     from gpu_process_inventory import ProcessInventory
     from gpu_active import active_summary
     from gpu_vram_state import LastVRAM
-    from gpu_live_memory_041 import LiveGraphicsMemory
     from gputaskman.report import to_dict
     import psutil
     psutil.cpu_percent(interval=None)
     inventory = ProcessInventory()
-    live_memory = LiveGraphicsMemory()
     vram_state = LastVRAM()
     cpu_pids = {}
     def enumerate_living():
@@ -70,14 +68,13 @@ def run() -> None:
             living = enumerate_living()
             raw = vram_state.apply(to_dict(snap))
             observed = raw.get('processes') or []
-            live_memory.set_targets(observed, living)
             raw['processes'] = inventory.update(living, observed)
             # Original metal backend calls the host-RAM graphics footprint vram_bytes.
             # Make the source explicit for the native Intel/AMD UI; per-PID
             # discrete Radeon VRAM remains unmeasured, not zero.
             for process in raw['processes']:
                 process['graphics_footprint_bytes'] = process.get('vram_bytes')
-                process.update(live_memory.read(process['pid'], process['started_at']) or {})
+                process.update(with_collector.counters.poller.get_graphics_map(process['pid'], process['started_at']) or {})
                 process['dedicated_vram_bytes'] = None  # not exposed as proven RX580 bytes per PID
                 pid = process['pid']
                 if process['graphics_footprint_bytes'] is not None:
@@ -96,6 +93,8 @@ def run() -> None:
                 process['graphics_footprint_status'] = reason
             raw['os_process_count'] = len(living)
             raw['gpu_client_count'] = len(observed)
+            raw['graphics_map_measured_count'] = sum(p.get('gpu_client_observed') and p.get('graphics_map_status') == 'measured' for p in raw['processes'])
+            raw['graphics_map_own_gpu_count'] = sum(p.get('gpu_client_observed') and with_collector.counters._owners.get(p['pid']) == os.getuid() for p in raw['processes'])
             raw['gpu_current_count'] = sum(r['gpu_value_state'] == 'current' for r in raw['processes'])
             raw['gpu_last_count'] = sum(r['gpu_value_state'] == 'last' for r in raw['processes'])
             raw.update(active_summary(raw['processes']))
@@ -104,7 +103,6 @@ def run() -> None:
             print(json.dumps(data, separators=(",", ":"), allow_nan=False), flush=True)
             time.sleep(max(0.5, 2.0-(time.monotonic()-started)))
     finally:
-        live_memory.close()
         with_collector.close()
 
 if __name__ == "__main__":

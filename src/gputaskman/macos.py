@@ -193,6 +193,9 @@ def _identity(pid: int) -> float | None:
         return None
 
 
+from .macos_graphics_breakdown import split_graphics_categories
+
+
 class FootprintPoller:
     """footprint(1) takes ~70 ms per process, too slow for the refresh loop, so a background thread measures
     the targets: busy or not-yet-measured processes every pass (~2 s), idle ones every 30 s. Results are tied
@@ -215,6 +218,8 @@ class FootprintPoller:
         self._sizes: dict[int, tuple[object, int]] = {}  # pid -> (identity, graphics bytes)
         self._reasons: dict[int, tuple[object, str]] = {}  # pid/identity -> last attempted result
         self._measure_reasons: dict[int, str] = {}  # written by the poller worker
+        self._measure_details: dict[int, dict] = {}  # owned by poller thread
+        self._map_sizes: dict[int, tuple[object, float, dict]] = {}  # identity, timestamp, categories
         self._due: dict[int, float] = {}
         self._fails: dict[int, int] = {}
         self._retry: dict[int, float] = {}
@@ -233,13 +238,13 @@ class FootprintPoller:
         """[(pid, identity, busy)], busiest first. Anything else, or a PID whose identity changed, is forgotten."""
         with self._lock:
             self._targets = {pid: (ident, busy) for pid, ident, busy in targets}
-            for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons):
+            for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons, self._measure_details, self._map_sizes):
                 for pid in list(store):
                     if pid not in self._targets:
                         del store[pid]
             for pid, (ident, _) in self._targets.items():
                 if pid in self._sizes and self._sizes[pid][0] != ident:  # reused PID
-                    for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons):
+                    for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons, self._measure_details, self._map_sizes):
                         store.pop(pid, None)
         self._wake.set()
 
@@ -247,6 +252,18 @@ class FootprintPoller:
         with self._lock:
             hit = self._sizes.get(pid)
         return hit[1] if hit and hit[0] == identity else None
+
+    def get_graphics_map(self, pid, identity):
+        """Live category reading from the SAME footprint sample as the GPU poller."""
+        with self._lock:
+            record = self._map_sizes.get(pid)
+        if record is None or record[0] != identity:
+            return None
+        ident, stamped, values = record
+        age = max(0.0, self._clock() - stamped)
+        if age > 150.0:
+            return None
+        return dict(values, graphics_map_age_s=round(age, 1))
 
     def measure(self, pid: int) -> int | None:
         """Return graphics HOST RAM; record the cause when footprint is unavailable."""
@@ -269,6 +286,7 @@ class FootprintPoller:
         for p in data.get("processes") or []:
             if str(p.get("pid")) == str(pid):
                 amount = graphics_bytes(p)
+                self._measure_details[pid] = split_graphics_categories(p)
                 self._measure_reasons[pid] = "measured" if amount is not None else "no_graphics_categories"
                 return amount
         self._measure_reasons[pid] = "footprint_pid_missing"
@@ -287,11 +305,16 @@ class FootprintPoller:
                 return note[1]
         return "pending"
 
-    def _remember_measurement(self, pid, ident, size, reason, now):
+    def _remember_measurement(self, pid, ident, size, reason, now, breakdown=None):
         with self._lock:
             if self._targets.get(pid, (None,))[0] != ident:
                 return  # process exited or PID was reused while probing
             self._reasons[pid] = (ident, reason)
+            if breakdown is not None:
+                detail = dict(breakdown)
+                detail['graphics_map_status'] = ('measured' if detail.get('graphics_map_bytes') is not None
+                                                 else 'no_graphics_categories')
+                self._map_sizes[pid] = (ident, self._clock(), detail)
             if size is None:
                 self._fails[pid] = self._fails.get(pid, 0) + 1
                 if self._fails[pid] >= self.FAIL_LIMIT:
@@ -328,13 +351,16 @@ class FootprintPoller:
                 return
             part = due[start:start + self.batch_size]
             readings = None
+            detail = {}
             if len(part) >= 2 and not self._batch_disabled:
                 from .macos_footprint_batch import collect_graphics_batch
-                readings = collect_graphics_batch([p for p, _, _ in part], self._run, graphics_bytes)
+                def extract(row):
+                    if type(row.get('pid')) is int:
+                        detail[row['pid']] = split_graphics_categories(row)
+                    return graphics_bytes(row)
+                readings = collect_graphics_batch([p for p, _, _ in part], self._run, extract)
                 if readings is not None and not self._batch_verified:
-                    # Compare up to four actual PIDs before trusting group
-                    # accounting. De-duplication in a multi-PID footprint must
-                    # never silently alter displayed per-process values.
+                    # Match the original verified batch-vs-single validation.
                     for pid, _, _ in part[:4]:
                         if self._single(pid) != readings[pid]:
                             self._batch_disabled = True
@@ -343,13 +369,20 @@ class FootprintPoller:
                     if readings is not None:
                         self._batch_verified = True
                 elif readings is None:
-                    # Tool may not support multi-PID JSON on this macOS build.
                     self._batch_disabled = True
             if readings is None:
-                readings = {pid: self._single(pid) for pid, _, _ in part}
+                readings, detail = {}, {}
+                for pid, _, _ in part:
+                    readings[pid] = self._single(pid)
+                    sample = self._measure_details.pop(pid, None)
+                    if sample is not None:
+                        detail[pid] = sample
+            else:
+                for pid, _, _ in part:
+                    self._measure_details.pop(pid, None)
             for pid, ident, started in part:
                 size, reason = readings[pid]
-                self._remember_measurement(pid, ident, size, reason, started)
+                self._remember_measurement(pid, ident, size, reason, started, detail.get(pid))
 
     def wait_pass(self, timeout: float) -> bool:
         self._passed.clear()

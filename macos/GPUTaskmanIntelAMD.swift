@@ -77,6 +77,8 @@ struct GPUProcess: Identifiable {
     @Published var devicePower: Double?
     @Published var deviceClock: Double?
     @Published var measuredGraphicsClients = 0
+    @Published var graphicsMapMeasuredCount = 0
+    @Published var graphicsMapOwnCount = 0
     @Published var nonzeroGraphicsClients = 0
     @Published var memoryMapPID: Int?
     @Published var memoryMapText = ""
@@ -166,6 +168,8 @@ struct GPUProcess: Identifiable {
         vramHistory.append(vramState == "current" ? used.map { $0 / 1073741824 } : nil)
         if vramHistory.count > 90 { vramHistory.removeFirst(vramHistory.count - 90) }
         currentGPUClients = root["gpu_client_count"] as? Int ?? 0
+        graphicsMapMeasuredCount = root["graphics_map_measured_count"] as? Int ?? 0
+        graphicsMapOwnCount = root["graphics_map_own_gpu_count"] as? Int ?? 0
         let rawRows = root["processes"] as? [[String: Any]] ?? []
         observedCount = root["os_process_count"] as? Int ?? rawRows.count
         lastValueCount = root["gpu_last_count"] as? Int ?? 0
@@ -370,7 +374,7 @@ struct GPUContentView: View {
                 }
             }.padding(12).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 12) {
-                Text("GPU-PROZESSE · \(model.currentGPUClients) GPU-Clients")
+                Text("GPU-PROZESSE · \(model.currentGPUClients) GPU-Clients · Grafik-Map \(model.graphicsMapMeasuredCount)/\(model.graphicsMapOwnCount) eigene")
                     .font(.headline)
                 Spacer()
                 if let temperature = model.deviceTemperature {
