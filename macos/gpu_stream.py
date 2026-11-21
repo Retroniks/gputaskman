@@ -93,8 +93,10 @@ def run() -> None:
                 process['graphics_footprint_status'] = reason
             raw['os_process_count'] = len(living)
             raw['gpu_client_count'] = len(observed)
-            raw['graphics_map_measured_count'] = sum(p.get('gpu_client_observed') and p.get('graphics_map_status') == 'measured' for p in raw['processes'])
-            raw['graphics_map_own_gpu_count'] = sum(p.get('gpu_client_observed') and with_collector.counters._owners.get(p['pid']) == os.getuid() for p in raw['processes'])
+            coverage = with_collector.counters.poller.coverage_snapshot()
+            raw['graphics_map_coverage'] = coverage
+            raw['graphics_map_measured_count'] = coverage['measured']
+            raw['graphics_map_own_gpu_count'] = coverage['total']
             raw['gpu_current_count'] = sum(r['gpu_value_state'] == 'current' for r in raw['processes'])
             raw['gpu_last_count'] = sum(r['gpu_value_state'] == 'last' for r in raw['processes'])
             raw.update(active_summary(raw['processes']))

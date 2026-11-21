@@ -79,6 +79,9 @@ struct GPUProcess: Identifiable {
     @Published var measuredGraphicsClients = 0
     @Published var graphicsMapMeasuredCount = 0
     @Published var graphicsMapOwnCount = 0
+    @Published var graphicsMapNoCategoriesCount = 0
+    @Published var graphicsMapErrorCount = 0
+    @Published var graphicsMapPendingCount = 0
     @Published var nonzeroGraphicsClients = 0
     @Published var memoryMapPID: Int?
     @Published var memoryMapText = ""
@@ -170,6 +173,10 @@ struct GPUProcess: Identifiable {
         currentGPUClients = root["gpu_client_count"] as? Int ?? 0
         graphicsMapMeasuredCount = root["graphics_map_measured_count"] as? Int ?? 0
         graphicsMapOwnCount = root["graphics_map_own_gpu_count"] as? Int ?? 0
+        let mapCoverage = root["graphics_map_coverage"] as? [String: Int] ?? [:]
+        graphicsMapNoCategoriesCount = mapCoverage["no_graphics_categories"] ?? 0
+        graphicsMapErrorCount = mapCoverage["errors"] ?? 0
+        graphicsMapPendingCount = (mapCoverage["pending"] ?? 0) + (mapCoverage["stale"] ?? 0)
         let rawRows = root["processes"] as? [[String: Any]] ?? []
         observedCount = root["os_process_count"] as? Int ?? rawRows.count
         lastValueCount = root["gpu_last_count"] as? Int ?? 0
@@ -374,8 +381,12 @@ struct GPUContentView: View {
                 }
             }.padding(12).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 12) {
-                Text("GPU-PROZESSE · \(model.currentGPUClients) GPU-Clients · Grafik-Map \(model.graphicsMapMeasuredCount)/\(model.graphicsMapOwnCount) eigene")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("GPU-PROZESSE · \(model.currentGPUClients) GPU-Clients · Grafik-Map \(model.graphicsMapMeasuredCount)/\(model.graphicsMapOwnCount) eigene")
+                        .font(.headline)
+                    Text("Ohne Grafik-Kategorie: \(model.graphicsMapNoCategoriesCount) · Abfragefehler: \(model.graphicsMapErrorCount) · Ausstehend/veraltet: \(model.graphicsMapPendingCount)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 if let temperature = model.deviceTemperature {
                     Text(String(format: "GPU %.0f °C", temperature))

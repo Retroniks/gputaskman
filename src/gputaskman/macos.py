@@ -205,7 +205,8 @@ class FootprintPoller:
     IDLE_EVERY = 30.0  # re-measure idle processes this often
     FAIL_LIMIT = 3  # consecutive failures before backing off (one timeout under load is not "denied")
     FAIL_RETRY = 60.0
-    ACTIVE_MAP_REFRESH = 18.0  # no redundant footprint calls on every UI refresh
+    ACTIVE_MAP_REFRESH = 18.0  # avoid rerunning on every UI refresh
+    NO_GRAPHICS_REFRESH = 60.0  # valid response, no graphics categories; periodically recheck
 
     def __init__(self, run=subprocess.run, clock=time.monotonic, batch_size: int = 1, max_per_pass: int = 24) -> None:
         self._run = run
@@ -262,13 +263,55 @@ class FootprintPoller:
         """Live category reading from the SAME footprint sample as the GPU poller."""
         with self._lock:
             record = self._map_sizes.get(pid)
-        if record is None or record[0] != identity:
+            reason_record = self._reasons.get(pid)
+            active_identity = self._targets.get(pid, (None,))[0]
+        if active_identity != identity:
             return None
-        ident, stamped, values = record
-        age = max(0.0, self._clock() - stamped)
-        if age > 150.0:
-            return None
-        return dict(values, graphics_map_age_s=round(age, 1))
+        if record is not None and record[0] == identity:
+            ident, stamped, values = record
+            age = max(0.0, self._clock() - stamped)
+            if age <= 150.0:
+                return dict(values, graphics_map_age_s=round(age, 1))
+            return {'graphics_map_status': 'stale', 'graphics_map_age_s': round(age, 1)}
+        if reason_record is not None and reason_record[0] == identity:
+            return {'graphics_map_status': reason_record[1]}
+        return None  # no measurement yet; preserve original method contract
+
+    def coverage_snapshot(self):
+        """Classify current GPU targets without new footprint subprocesses or exports.
+
+        The denominator includes actual poller targets. Missing graphic categories
+        are observed responses, not failures, not zero VRAM and not GPU bytes.
+        """
+        with self._lock:
+            targets = dict(self._targets)
+            maps = dict(self._map_sizes)
+            reasons = dict(self._reasons)
+            now = self._clock()
+        buckets = {k: 0 for k in (
+            'measured', 'no_graphics_categories', 'footprint_no_json',
+            'footprint_pid_missing', 'footprint_timeout', 'footprint_read_error',
+            'stale', 'pending', 'other_error')}
+        for pid, (identity, _busy) in targets.items():
+            rec = maps.get(pid)
+            if rec is not None and rec[0] == identity:
+                age = max(0.0, now - rec[1])
+                if age <= 150.0:
+                    reason = rec[2].get('graphics_map_status', 'other_error')
+                else:
+                    reason = 'stale'
+            else:
+                cached = reasons.get(pid)
+                reason = cached[1] if cached is not None and cached[0] == identity else 'pending'
+            if reason not in buckets:
+                reason = 'other_error'
+            buckets[reason] += 1
+        result = {'total': len(targets), **buckets}
+        result['attempted'] = result['total'] - buckets['pending']
+        result['errors'] = sum(buckets[k] for k in (
+            'footprint_no_json', 'footprint_pid_missing', 'footprint_timeout',
+            'footprint_read_error', 'other_error'))
+        return result
 
     def measure(self, pid: int) -> int | None:
         """Return graphics HOST RAM; record the cause when footprint is unavailable."""
@@ -320,7 +363,14 @@ class FootprintPoller:
                 detail['graphics_map_status'] = ('measured' if detail.get('graphics_map_bytes') is not None
                                                  else 'no_graphics_categories')
                 self._map_sizes[pid] = (ident, self._clock(), detail)
-            if size is None:
+            if size is None and breakdown is not None and detail.get('graphics_map_status') == 'no_graphics_categories':
+                # A complete category-free footprint is a valid observation,
+                # not a transient command failure; never trigger error backoff.
+                self._fails.pop(pid, None)
+                self._retry.pop(pid, None)
+                self._due[pid] = now + self.NO_GRAPHICS_REFRESH
+                self._sizes.pop(pid, None)  # remove previous graphics bytes when categories disappear
+            elif size is None:
                 self._fails[pid] = self._fails.get(pid, 0) + 1
                 if self._fails[pid] >= self.FAIL_LIMIT:
                     self._retry[pid] = now + self.FAIL_RETRY
@@ -359,7 +409,10 @@ class FootprintPoller:
             stored = maps.get(pid)
             if stored is not None and stored[0] == ident:
                 age = max(0.0, now - stored[1])
-                if age < (self.ACTIVE_MAP_REFRESH if busy else self.IDLE_EVERY):
+                interval = self.ACTIVE_MAP_REFRESH if busy else self.IDLE_EVERY
+                if stored[2].get('graphics_map_status') == 'no_graphics_categories':
+                    interval = max(interval, self.NO_GRAPHICS_REFRESH)
+                if age < interval:
                     continue
             if not busy and pid in sizes and sizes[pid][0] == ident and due_at.get(pid, 0) > now:
                 continue
