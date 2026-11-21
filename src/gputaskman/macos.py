@@ -205,12 +205,15 @@ class FootprintPoller:
     IDLE_EVERY = 30.0  # re-measure idle processes this often
     FAIL_LIMIT = 3  # consecutive failures before backing off (one timeout under load is not "denied")
     FAIL_RETRY = 60.0
+    ACTIVE_MAP_REFRESH = 18.0  # no redundant footprint calls on every UI refresh
 
-    def __init__(self, run=subprocess.run, clock=time.monotonic, batch_size: int = 1) -> None:
+    def __init__(self, run=subprocess.run, clock=time.monotonic, batch_size: int = 1, max_per_pass: int = 24) -> None:
         self._run = run
         # Existing single-process mocks retain the original path. Native Radeon
         # runtime uses bounded batches. First batch is checked against singles.
         self.batch_size = max(1, min(int(batch_size), 12))
+        self.max_per_pass = max(1, min(int(max_per_pass), 48))
+        self._scan_cursor = 0  # fairness: bounded passes cover every accessible PID
         self._batch_verified = False
         self._batch_disabled = False
         self._clock = clock
@@ -237,13 +240,15 @@ class FootprintPoller:
     def set_targets(self, targets: list[tuple[int, object, bool]]) -> None:
         """[(pid, identity, busy)], busiest first. Anything else, or a PID whose identity changed, is forgotten."""
         with self._lock:
+            previous_targets = self._targets
             self._targets = {pid: (ident, busy) for pid, ident, busy in targets}
             for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons, self._measure_details, self._map_sizes):
                 for pid in list(store):
                     if pid not in self._targets:
                         del store[pid]
             for pid, (ident, _) in self._targets.items():
-                if pid in self._sizes and self._sizes[pid][0] != ident:  # reused PID
+                old = previous_targets.get(pid)
+                if old is not None and old[0] != ident:  # reused PID, even with failed previous reading
                     for store in (self._sizes, self._due, self._fails, self._retry, self._reasons, self._measure_reasons, self._measure_details, self._map_sizes):
                         store.pop(pid, None)
         self._wake.set()
@@ -332,24 +337,44 @@ class FootprintPoller:
         return (size, reason)
 
     def poll_once(self) -> None:
+        # Never let a large GPU-client list monopolize one sampling cycle.
+        # Keep rotating even when the first clients remain continuously active.
         with self._lock:
             targets = list(self._targets.items())
+            start = self._scan_cursor % len(targets) if targets else 0
+            ordered = targets[start:] + targets[:start]
+            retry = dict(self._retry)
+            due_at = dict(self._due)
+            sizes = dict(self._sizes)
+            maps = dict(self._map_sizes)
         due = []
-        for pid, (ident, busy) in targets:
+        visited = 0
+        for pid, (ident, busy) in ordered:
             if self._stop:
                 return
+            visited += 1
             now = self._clock()
-            with self._lock:
-                if self._retry.get(pid, 0) > now:
+            if retry.get(pid, 0) > now:
+                continue
+            stored = maps.get(pid)
+            if stored is not None and stored[0] == ident:
+                age = max(0.0, now - stored[1])
+                if age < (self.ACTIVE_MAP_REFRESH if busy else self.IDLE_EVERY):
                     continue
-                if not busy and pid in self._sizes and self._due.get(pid, 0) > now:
-                    continue
+            if not busy and pid in sizes and sizes[pid][0] == ident and due_at.get(pid, 0) > now:
+                continue
             due.append((pid, ident, now))
-
-        for start in range(0, len(due), self.batch_size):
+            if len(due) >= self.max_per_pass:
+                break
+        with self._lock:
+            if targets:
+                self._scan_cursor = (start + visited) % len(targets)
+        # Keep old batch-integrity protection; incorrect/partial group data
+        # still falls back to real individual PID reads.
+        for offset in range(0, len(due), self.batch_size):
             if self._stop:
                 return
-            part = due[start:start + self.batch_size]
+            part = due[offset:offset + self.batch_size]
             readings = None
             detail = {}
             if len(part) >= 2 and not self._batch_disabled:
@@ -360,7 +385,6 @@ class FootprintPoller:
                     return graphics_bytes(row)
                 readings = collect_graphics_batch([p for p, _, _ in part], self._run, extract)
                 if readings is not None and not self._batch_verified:
-                    # Match the original verified batch-vs-single validation.
                     for pid, _, _ in part[:4]:
                         if self._single(pid) != readings[pid]:
                             self._batch_disabled = True
