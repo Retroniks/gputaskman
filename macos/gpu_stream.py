@@ -24,11 +24,13 @@ def run() -> None:
     from gpu_process_inventory import ProcessInventory
     from gpu_active import active_summary
     from gpu_vram_state import LastVRAM
+    from gpu_memory_trends_045 import GraphicsTrends
     from gputaskman.report import to_dict
     import psutil
     psutil.cpu_percent(interval=None)
     inventory = ProcessInventory()
     vram_state = LastVRAM()
+    graphics_trends = GraphicsTrends(window_s=300.0)
     cpu_pids = {}
     def enumerate_living():
         living = []
@@ -91,6 +93,7 @@ def run() -> None:
                         poller = getattr(with_collector.counters, 'poller', None)
                         reason = poller.status(pid, process['started_at']) if poller and hasattr(poller, 'status') else 'pending'
                 process['graphics_footprint_status'] = reason
+            graphics_trends.update(raw['processes'], time.monotonic())
             raw['os_process_count'] = len(living)
             raw['gpu_client_count'] = len(observed)
             coverage = with_collector.counters.poller.coverage_snapshot()

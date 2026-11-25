@@ -9,6 +9,9 @@ struct GPUProcess: Identifiable {
     let gpu: Double?
     let graphicsFootprint: Double?
     let graphicsMap: Double?
+    let graphicsChange: Double?
+    let graphicsPeak: Double?
+    let graphicsTrendSamples: Int
     let iosurface: Double?
     let ioaccelerator: Double?
     let graphicsMapAge: Double?
@@ -50,6 +53,8 @@ struct GPUProcess: Identifiable {
     var gpuKey: String { String(format: "%020.6f", gpu ?? -1) }
     var graphicsFootprintKey: String { String(format: "%020.0f", graphicsFootprint ?? -1) }
     var graphicsMapKey: String { String(format: "%020.0f", graphicsMap ?? -1) }
+    var graphicsChangeKey: String { String(format: "%020.0f", (graphicsChange ?? -10000000000000) + 10000000000000) }
+    var graphicsPeakKey: String { String(format: "%020.0f", graphicsPeak ?? -1) }
     var iosurfaceKey: String { String(format: "%020.0f", iosurface ?? -1) }
     var ioacceleratorKey: String { String(format: "%020.0f", ioaccelerator ?? -1) }
 
@@ -206,6 +211,9 @@ struct GPUProcess: Identifiable {
                               gpu: (row["gpu_pct"] as? NSNumber)?.doubleValue,
                               graphicsFootprint: (row["graphics_footprint_bytes"] as? NSNumber)?.doubleValue,
                               graphicsMap: (row["graphics_map_bytes"] as? NSNumber)?.doubleValue,
+                              graphicsChange: (row["graphics_change_bytes"] as? NSNumber)?.doubleValue,
+                              graphicsPeak: (row["graphics_peak_5m_bytes"] as? NSNumber)?.doubleValue,
+                              graphicsTrendSamples: row["graphics_trend_samples"] as? Int ?? 0,
                               iosurface: (row["iosurface_bytes"] as? NSNumber)?.doubleValue,
                               ioaccelerator: (row["ioaccelerator_bytes"] as? NSNumber)?.doubleValue,
                               graphicsMapAge: (row["graphics_map_age_s"] as? NSNumber)?.doubleValue,
@@ -321,6 +329,8 @@ struct GPUContentView: View {
             switch visibility {
             case 1: return p.gpuValueState == "current" || p.gpuValueState == "last"
             case 2: return p.gpuValueState == "current" && (p.gpu ?? 0) > 0
+            case 3: return p.graphicsMapStatus == "measured" && p.graphicsMap != nil
+            case 4: return p.graphicsMapStatus == "no_graphics_categories"
             default: return true
             }
         }
@@ -331,6 +341,12 @@ struct GPUContentView: View {
         guard let number = n, number >= 0 else { return "—" }
         if number < 107374182.4 { return String(format: "%.1f MiB", number / 1048576) }
         return String(format: "%.2f GiB", number / 1073741824)
+    }
+    private func changeText(_ value: Double?) -> String {
+        guard let number = value else { return "—" }
+        if number == 0 { return "0 KiB" }
+        if abs(number) < 1048576 { return String(format: "%+.0f KiB", number / 1024) }
+        return String(format: "%+.2f MiB", number / 1048576)
     }
     private func pct(_ n: Double?) -> String {
         n.map { String(format: "%.1f %%", $0) } ?? "—"
@@ -365,7 +381,9 @@ struct GPUContentView: View {
                         Text("VRAM-Messung noch nicht verfügbar")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("VRAM ist geräteweit gemessen. Eine belastbare Zuordnung pro PID fehlt.")
+                    Text(model.vramState == "current"
+                         ? "Gesamt-VRAM: gültiger Gerätewert. Kein dedizierter VRAM je PID."
+                         : "Gesamt-VRAM: kein aktueller gültiger Gerätewert. Kein dedizierter VRAM je PID.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -405,7 +423,9 @@ struct GPUContentView: View {
                     Text("Alle laufenden").tag(0)
                     Text("Mit GPU-Daten").tag(1)
                     Text("GPU aktiv").tag(2)
-                }.pickerStyle(.segmented).frame(maxWidth: 470)
+                    Text("Grafikwerte").tag(3)
+                    Text("Ohne Grafik").tag(4)
+                }.pickerStyle(.segmented).frame(maxWidth: 650)
                 Spacer()
                 TextField("Prozess oder PID suchen", text: $searchText)
                     .textFieldStyle(.roundedBorder)
@@ -442,6 +462,11 @@ struct GPUContentView: View {
                     Text(gib(p.graphicsMap)).monospacedDigit()
                         .help("Summe der ausgewiesenen Grafik-Kategorien aus footprint; keine Radeon-VRAM-Zuordnung. Status: " + p.graphicsMapStatus)
                 }.width(110)
+                 TableColumn("Δ / Peak 5 Min", value: \GPUProcess.graphicsPeakKey) { p in
+                    Text(changeText(p.graphicsChange) + " / " + gib(p.graphicsPeak))
+                        .monospacedDigit()
+                        .help("Links: Änderung seit letzter echter footprint-Messung; rechts: höchster Grafik-dirty-Wert in fünf Minuten; sortiert nach Peak")
+                }.width(198)
                 TableColumn("Inside", value: \GPUProcess.inside) { p in
                     Text(p.inside.isEmpty ? "—" : p.inside).lineLimit(1)
                 }.width(min: 130, ideal: 210)
@@ -466,6 +491,8 @@ struct GPUContentView: View {
                         Text("IOSurface dirty: " + gib(process.iosurface))
                         Text("IOAccelerator dirty: " + gib(process.ioaccelerator))
                         Text("Grafik-dirty: " + gib(process.graphicsMap))
+                        Text("Δ letzte Messung: " + changeText(process.graphicsChange))
+                        Text("Peak 5 Min: " + gib(process.graphicsPeak))
                         Text("Memory-Map: " + (process.graphicsMapStatus == "pending" ? "ausstehend" : process.graphicsMapStatus))
                         if let age = process.graphicsMapAge {
                             Text(String(format: "vor %.0f s", age))
@@ -517,7 +544,7 @@ struct GPUContentView: View {
             }.font(.caption)
         }
         .padding(18)
-        .frame(minWidth: 1260, minHeight: 650)
+        .frame(minWidth: 1480, minHeight: 650)
         .onAppear {
             model.start()
             NSApp.activate(ignoringOtherApps: true)

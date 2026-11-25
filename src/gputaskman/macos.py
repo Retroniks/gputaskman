@@ -271,7 +271,8 @@ class FootprintPoller:
             ident, stamped, values = record
             age = max(0.0, self._clock() - stamped)
             if age <= 150.0:
-                return dict(values, graphics_map_age_s=round(age, 1))
+                return dict(values, graphics_map_age_s=round(age, 1),
+                            graphics_map_sample_clock=stamped)
             return {'graphics_map_status': 'stale', 'graphics_map_age_s': round(age, 1)}
         if reason_record is not None and reason_record[0] == identity:
             return {'graphics_map_status': reason_record[1]}
