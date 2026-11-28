@@ -12,6 +12,7 @@ struct GPUProcess: Identifiable {
     let graphicsChange: Double?
     let graphicsPeak: Double?
     let graphicsTrendSamples: Int
+    let graphicsSeries: [[Double]]
     let iosurface: Double?
     let ioaccelerator: Double?
     let graphicsMapAge: Double?
@@ -214,6 +215,9 @@ struct GPUProcess: Identifiable {
                               graphicsChange: (row["graphics_change_bytes"] as? NSNumber)?.doubleValue,
                               graphicsPeak: (row["graphics_peak_5m_bytes"] as? NSNumber)?.doubleValue,
                               graphicsTrendSamples: row["graphics_trend_samples"] as? Int ?? 0,
+                              graphicsSeries: (row["graphics_series_5m"] as? [[NSNumber]] ?? []).compactMap { pair in
+                                  pair.count == 2 ? [pair[0].doubleValue, pair[1].doubleValue] : nil
+                              },
                               iosurface: (row["iosurface_bytes"] as? NSNumber)?.doubleValue,
                               ioaccelerator: (row["ioaccelerator_bytes"] as? NSNumber)?.doubleValue,
                               graphicsMapAge: (row["graphics_map_age_s"] as? NSNumber)?.doubleValue,
@@ -312,6 +316,53 @@ struct GPUHistoryPanel: View {
             .frame(height: 44)
             .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 4))
         }
+    }
+}
+
+struct GPUProcessMemoryChart: View {
+    let series: [[Double]]  // Real monotonic stamp, graphics HOST bytes; one point per footprint sample.
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Grafik-dirty · Verlauf der letzten 5 Minuten")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text("\(series.count) echte Messungen")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            GeometryReader { frame in
+                Path { path in
+                    let valid = series.filter { $0.count == 2 && $0[0].isFinite && $0[1].isFinite && $0[1] >= 0 }
+                    guard valid.count >= 2 else { return }
+                    let t0 = valid.first![0]
+                    let t1 = valid.last![0]
+                    let low = valid.map { $0[1] }.min() ?? 0
+                    let high = valid.map { $0[1] }.max() ?? 0
+                    for (index, point) in valid.enumerated() {
+                        let x = frame.size.width * CGFloat((point[0] - t0) / max(t1 - t0, 0.001))
+                        let fraction = high > low ? (point[1] - low) / (high - low) : 0.5
+                        let y = frame.size.height * CGFloat(1 - fraction)
+                        if index == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+                    }
+                }
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            }
+            .frame(height: 58)
+            .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 4))
+            HStack {
+                Text("Tatsächliche Messzeitpunkte · macOS-Hostspeicher")
+                Spacer()
+                Text("Minimum: " + formatBytes(series.map { $0[1] }.min()))
+                Text("Maximum: " + formatBytes(series.map { $0[1] }.max()))
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+    private func formatBytes(_ n: Double?) -> String {
+        guard let n = n, n >= 0 else { return "—" }
+        return String(format: "%.2f MiB", n / 1048576)
     }
 }
 
@@ -501,6 +552,14 @@ struct GPUContentView: View {
                     }.font(.caption).monospacedDigit()
                     Text("Grafik-Kategorien: macOS-Hostspeicher; keine dedizierte RX-580-VRAM-Zuordnung")
                         .font(.caption2).foregroundStyle(.secondary)
+                    if process.graphicsSeries.count >= 2 {
+                        GPUProcessMemoryChart(series: process.graphicsSeries)
+                    } else {
+                        Text(process.graphicsTrendSamples == 1
+                             ? "Grafikverlauf: Startwert erfasst; zweite Messung ausstehend"
+                             : "Grafikverlauf: noch keine gültige Grafikmessung")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("Runtime: " + (process.runtime.isEmpty ? "Nicht ermittelt" : process.runtime))
                         .font(.caption)
                     Text("Inside: " + (process.inside.isEmpty ? "Nicht ermittelt" : process.inside))

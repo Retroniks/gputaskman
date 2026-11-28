@@ -35,6 +35,7 @@ class GraphicsTrends:
             row['graphics_change_bytes'] = None
             row['graphics_peak_5m_bytes'] = None
             row['graphics_trend_samples'] = 0
+            row['graphics_series_5m'] = []
             pid, started = row.get('pid'), row.get('started_at')
             key = (pid, started)
             if key not in alive:
@@ -65,3 +66,4 @@ class GraphicsTrends:
                 row['graphics_change_bytes'] = self._delta.get(key)
                 row['graphics_peak_5m_bytes'] = max(v for _, v in hist)
                 row['graphics_trend_samples'] = len(hist)
+                row['graphics_series_5m'] = [[float(t), int(v)] for t, v in list(hist)[-64:]]
