@@ -463,9 +463,9 @@ struct GPUContentView: View {
                         .help("Summe der ausgewiesenen Grafik-Kategorien aus footprint; keine Radeon-VRAM-Zuordnung. Status: " + p.graphicsMapStatus)
                 }.width(110)
                  TableColumn("Δ / Peak 5 Min", value: \GPUProcess.graphicsPeakKey) { p in
-                    Text(changeText(p.graphicsChange) + " / " + gib(p.graphicsPeak))
+                    Text((p.graphicsTrendSamples < 2 ? "Startwert" : changeText(p.graphicsChange)) + " / " + gib(p.graphicsPeak))
                         .monospacedDigit()
-                        .help("Links: Änderung seit letzter echter footprint-Messung; rechts: höchster Grafik-dirty-Wert in fünf Minuten; sortiert nach Peak")
+                        .help("Delta erst nach zwei echten footprint-Messungen. Aktuell: \(p.graphicsTrendSamples) Messungen. Rechts: Peak innerhalb von fünf Minuten, sortiert nach Peak.")
                 }.width(198)
                 TableColumn("Inside", value: \GPUProcess.inside) { p in
                     Text(p.inside.isEmpty ? "—" : p.inside).lineLimit(1)
@@ -491,8 +491,9 @@ struct GPUContentView: View {
                         Text("IOSurface dirty: " + gib(process.iosurface))
                         Text("IOAccelerator dirty: " + gib(process.ioaccelerator))
                         Text("Grafik-dirty: " + gib(process.graphicsMap))
-                        Text("Δ letzte Messung: " + changeText(process.graphicsChange))
+                        Text("Δ letzte Messung: " + (process.graphicsTrendSamples < 2 ? "Startwert" : changeText(process.graphicsChange)))
                         Text("Peak 5 Min: " + gib(process.graphicsPeak))
+                        Text("Echte Trendmessungen: \(process.graphicsTrendSamples)")
                         Text("Memory-Map: " + (process.graphicsMapStatus == "pending" ? "ausstehend" : process.graphicsMapStatus))
                         if let age = process.graphicsMapAge {
                             Text(String(format: "vor %.0f s", age))
