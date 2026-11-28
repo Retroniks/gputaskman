@@ -13,6 +13,30 @@ def _value(x):
     return None
 
 
+def compact_extrema(history, limit=64):
+    # Preserve actual timestamps, independent extrema and bounding endpoints.
+    # This is display decimation, NOT an additional footprint measurement.
+    if limit < 4:
+        raise ValueError('at least four plot points required')
+    readings = list(history)
+    if len(readings) <= limit:
+        return [[float(t), int(value)] for t, value in readings]
+    inside = readings[1:-1]
+    buckets = (limit-2)//2
+    chosen = [readings[0]]
+    for bucket in range(buckets):
+        lo = bucket * len(inside) // buckets
+        hi = (bucket+1) * len(inside) // buckets
+        if lo == hi:
+            continue
+        minimum = min(range(lo,hi), key=lambda i: inside[i][1])
+        maximum = max(range(lo,hi), key=lambda i: inside[i][1])
+        for idx in sorted({minimum, maximum}):
+            chosen.append(inside[idx])
+    chosen.append(readings[-1])
+    return [[float(t), int(value)] for t,value in chosen]
+
+
 class GraphicsTrends:
     """Rolling per-PID 5-minute peak and delta between actual footprint samples.
 
@@ -66,4 +90,4 @@ class GraphicsTrends:
                 row['graphics_change_bytes'] = self._delta.get(key)
                 row['graphics_peak_5m_bytes'] = max(v for _, v in hist)
                 row['graphics_trend_samples'] = len(hist)
-                row['graphics_series_5m'] = [[float(t), int(v)] for t, v in list(hist)[-64:]]
+                row['graphics_series_5m'] = compact_extrema(hist, limit=64)

@@ -320,14 +320,17 @@ struct GPUHistoryPanel: View {
 }
 
 struct GPUProcessMemoryChart: View {
-    let series: [[Double]]  // Real monotonic stamp, graphics HOST bytes; one point per footprint sample.
+    let series: [[Double]]  // Real monotonic stamps from footprint; no derived memory values.
+    let totalSamples: Int   // Full five-minute source sample count before min/max-preserving compression.
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text("Grafik-dirty · Verlauf der letzten 5 Minuten")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Text("\(series.count) echte Messungen")
+                Text(totalSamples > series.count
+                     ? "\(series.count) von \(totalSamples) echten Messpunkten (Min/Max erhalten)"
+                     : "\(totalSamples) echte Messungen")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             GeometryReader { frame in
@@ -553,7 +556,7 @@ struct GPUContentView: View {
                     Text("Grafik-Kategorien: macOS-Hostspeicher; keine dedizierte RX-580-VRAM-Zuordnung")
                         .font(.caption2).foregroundStyle(.secondary)
                     if process.graphicsSeries.count >= 2 {
-                        GPUProcessMemoryChart(series: process.graphicsSeries)
+                        GPUProcessMemoryChart(series: process.graphicsSeries, totalSamples: process.graphicsTrendSamples)
                     } else {
                         Text(process.graphicsTrendSamples == 1
                              ? "Grafikverlauf: Startwert erfasst; zweite Messung ausstehend"
